@@ -2,6 +2,7 @@ from mesa import Agent
 import networkx as nx
 import osmnx as ox
 import random
+from config import CALM_SPEED_MIN, CALM_SPEED_MAX
 
 class Student(Agent):
     def __init__(self, unique_id, model, start_node, delay=0, indoors=False, building_idx=None):
@@ -25,7 +26,7 @@ class Student(Agent):
 
         self.start_x, self.start_y = self.x, self.y
         self.end_x, self.end_y = self.x, self.y
-        self.base_speed = random.uniform(1.1, 1.5)
+        self.base_speed = random.uniform(CALM_SPEED_MIN, CALM_SPEED_MAX)
         self.panic_speed = self.base_speed * 1.8
         self.current_speed = self.base_speed
 

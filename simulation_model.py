@@ -22,6 +22,7 @@ class CampusModel(Model):
         self.fire_center_y = 0
         self.current_fire_radius: float = 0.0
         self.fire_blobs = []
+        self.safe_nodes = []
 
         all_nodes_ids = list(self.nodes_proj.index)
         for i in range(n_students):

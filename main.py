@@ -13,6 +13,7 @@ if __name__ == '__main__':
 
     n_stud = random.randint(TARGET_POPULATION_MIN, TARGET_POPULATION_MAX)
     model = CampusModel(G_all, G_drive, nodes, doors, n_students=n_stud)
+    model.safe_nodes = safe
 
     fig, ax = plt.subplots(figsize=(12,12))
 
@@ -22,7 +23,7 @@ if __name__ == '__main__':
     edges.plot(ax=ax, color='#bdc3c7', linewidth=0.5, alpha=0.5, zorder=1)
     ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=0)
 
-    scat = ax.scatter([], [], c='blue', s=20, zorder=5, label='Students')
+    scat = ax.scatter([], [], c='blue', s=20, zorder=10, label='Students')
 
     fire_glow = ax.scatter([], [], c='red', s=40, edgecolors='none', alpha=0.2, zorder=5)
     fire_core = ax.scatter([], [], c='orange', s=40, edgecolors='none', alpha=0.8, zorder=6)
@@ -35,17 +36,19 @@ if __name__ == '__main__':
 
     def update(frame):
         model.step()
-        active_agents = [a for a in model.schedule.agents if a.is_active and not a.is_dead]
-        if active_agents:
-            offsets = [(a.x, a.y) for a in active_agents]
+        agents = [a for a in model.schedule.agents if a.is_active]
+        if agents:
+            offsets = [(a.x, a.y) for a in agents]
+            colors = [a.color for a in agents]
             scat.set_offsets(offsets)
+            scat.set_array(None)
+            scat.set_color(colors)
 
         if model.fire_started and model.fire_blobs:
             coords = np.array([[b['x'], b['y']] for b in model.fire_blobs])
             fire_core.set_offsets(coords)
-            fire_core.set_sizes([30]*len(coords))
             fire_glow.set_offsets(coords)
-            fire_glow.set_sizes([model.current_fire_radius * 5] * len(coords))
+            fire_glow.set_sizes([model.current_fire_radius * 10] * len(coords))
 
         else:
             fire_core.set_offsets(np.empty((0, 2)))

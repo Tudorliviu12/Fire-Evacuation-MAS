@@ -5,7 +5,8 @@ from agent_student import Student
 import random
 import math
 
-from config import FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP
+from config import MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, \
+    SMOKE_GROWTH, SMOKE_LIFESPAN
 
 
 class CampusModel(Model):
@@ -23,6 +24,8 @@ class CampusModel(Model):
         self.current_fire_radius: float = 0.0
         self.fire_blobs = []
         self.safe_nodes = []
+        self.smoke_blobs = []
+        self.wind_angle = WIND_ANGLE
 
         all_nodes_ids = list(self.nodes_proj.index)
         for i in range(n_students):
@@ -48,6 +51,7 @@ class CampusModel(Model):
                 growth = growth * 0.3
             self.current_fire_radius += growth
             target_blobs = min(int(self.current_fire_radius * 8), 500)
+
             while len(self.fire_blobs) < target_blobs:
                 ang = random.uniform(0, 2*math.pi)
                 dst = random.uniform(0, self.current_fire_radius)
@@ -57,5 +61,28 @@ class CampusModel(Model):
                 })
                 if len(self.fire_blobs) > target_blobs:
                     self.fire_blobs = self.fire_blobs[:target_blobs]
+
+            smoke_chance = 0.1 if self.current_fire_radius < 5 else 0.4
+
+            if len(self.smoke_blobs) < MAX_SMOKE and random.random() < smoke_chance:
+                ang_spawn = random.uniform(0, 2*math.pi)
+                dst_spawn = random.uniform(0, self.current_fire_radius*0.3)
+                self.smoke_blobs.append({
+                    'x': self.fire_center_x + math.cos(ang_spawn)*dst_spawn,
+                    'y': self.fire_center_y + math.sin(ang_spawn)*dst_spawn,
+                    'size': 5, 'age': 0,
+                    'angle': self.wind_angle + random.uniform(-15, 15),
+                })
+            for i in range(len(self.smoke_blobs) -1, -1, -1):
+                smoke = self.smoke_blobs[i]
+                growth_factor = SMOKE_GROWTH * (self.current_fire_radius / 15.0)
+                smoke['size'] += max(0.1, growth_factor)
+                rad_b = math.radians(smoke['angle'])
+                smoke['x'] += math.cos(rad_b) * SMOKE_SPEED
+                smoke['y'] += math.sin(rad_b) * SMOKE_SPEED
+                smoke['age'] += 1
+                if smoke['age'] > SMOKE_LIFESPAN:
+                    self.smoke_blobs.pop(i)
+
 
         self.schedule.step()

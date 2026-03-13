@@ -32,7 +32,7 @@ class Student(Agent):
         self.start_x, self.start_y = self.x, self.y
         self.end_x, self.end_y = self.x, self.y
         self.base_speed = random.uniform(CALM_SPEED_MIN, CALM_SPEED_MAX)
-        self.panic_speed = self.base_speed * 1.8
+        self.panic_speed = self.base_speed * 2.0
         self.current_speed = self.base_speed
 
         self.path = []
@@ -99,6 +99,13 @@ class Student(Agent):
             self.die()
             return
 
+        if not self.is_panicked:
+            for smoke in self.model.smoke_blobs[::5]:
+                d_smoke = ((self.x - smoke['x'])**2 + (self.y - smoke['y'])**2)**0.5
+                if d_smoke < 8.0:
+                    self.become_panicked()
+                    return
+
         if dist<sight_range:
             if not self.is_panicked:
                 self.become_panicked()
@@ -121,4 +128,8 @@ class Student(Agent):
             return
 
         self.check_survival()
+
+        if self.is_dead:
+            return
+
         self.move()

@@ -4,6 +4,10 @@ GEOJSON_FILE = "camine_tuiasi.geojson"
 
 WIND_ANGLE = 45 #de modificat posibilitatea sa se aleaga din interfata directia vantului
 MAX_SMOKE = 200
+SMOKE_LIFESPAN = 60
+SMOKE_GROWTH = 0.4
+SMOKE_SPEED = 0.8
+
 TARGET_POPULATION_MIN = 250 #de modificat in functie de baza de date
 TARGET_POPULATION_MAX = 350
 
@@ -21,7 +25,7 @@ BASE_EXTINGUISH_POWER = 0.25
 
 TRUCK_AWARENESS_RANGE = 15.0
 PANIC_CONTAGION_RANGE = 12.0
-PANIC_CHANCE = 0.1
+PANIC_CHANCE = 0.2
 PANIC_HEAT_ZONE = 25.0
 
 FIRE_GROWTH_MIN = 0.04

@@ -1,6 +1,7 @@
 from mesa import Agent
 import networkx as nx
 import osmnx as ox
+import math
 import random
 from config import CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
@@ -53,6 +54,9 @@ class Student(Agent):
 
     def move(self):
         if not self.path and self.frames_current >= self.frames_total:
+            if self.is_panicked:
+                self.should_remove = True
+                return
             self.pick_random_destination()
             if not self.path:
                 return
@@ -89,11 +93,11 @@ class Student(Agent):
                 self.path = []
 
     def check_survival(self):
-        if not self.model.fire_started:
+        if self.is_dead or not self.model.fire_started:
             return
         dist = ((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)**0.5
 
-        sight_range = self.personal_panic_threshold + (self.model.current_fire_radius * 1.5)
+        sight_range = self.personal_panic_threshold + (self.model.current_fire_radius * 3.0)
 
         if dist<(self.model.current_fire_radius - self.personal_death_threshold):
             self.die()
@@ -110,6 +114,37 @@ class Student(Agent):
             if not self.is_panicked:
                 self.become_panicked()
 
+    def check_surroundings(self):
+        if self.is_dead or not self.model.fire_started or self.is_panicked:
+            return
+        panicked_nearby = 0
+        for agent in self.model.schedule.agents:
+            if isinstance(agent, Student) and agent!=self and agent.is_panicked:
+                d = ((self.x - agent.x)**2 + (self.y - agent.y)**2)**0.5
+                if d<12.0:
+                    panicked_nearby += 1
+
+        if panicked_nearby >= 2:
+            if random.random() < 0.1:
+                self.become_panicked()
+
+
+    def plan_next_move(self):
+        if len(self.path) == 0:
+            current_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+            neighbors = list(self.model.G_all.neighbors(current_node))
+            cand_nodes = []
+
+            for n in neighbors:
+                nx_x = self.model.nodes_proj.loc[n].geometry.x
+                nx_y = self.model.nodes_proj.loc[n].geometry.y
+                d_fire_n = math.sqrt((nx_x-self.model.fire_center_x)**2 + (nx_y-self.model.fire_center_y)**2)
+                cand_nodes.append((n, d_fire_n))
+            if cand_nodes:
+                cand_nodes.sort(key=lambda x: x[1], reverse=True)
+                next_node = cand_nodes[0][0]
+                self.path = [next_node]
+
     def die(self):
         self.is_dead = True
         self.color = 'black'
@@ -118,18 +153,27 @@ class Student(Agent):
 
 
     def step(self):
-        if not self.is_active:
-            if self.model.schedule.steps >= self.start_delay:
-                self.is_active = True
-            else:
+        if not self.is_active or self.is_dead:
+            if not self.is_active:
+                if self.model.schedule.steps >= self.start_delay:
+                    self.is_active = True
+                else: return
+            if self.is_dead:
                 return
-
-        if self.is_dead:
-            return
 
         self.check_survival()
 
         if self.is_dead:
             return
+
+        if self.model.schedule.steps % 20 == 0:
+            self.check_surroundings()
+
+        if self.is_panicked:
+            curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+            if curr_node in self.model.safe_nodes:
+                self.should_remove = True
+                return
+            self.plan_next_move()
 
         self.move()

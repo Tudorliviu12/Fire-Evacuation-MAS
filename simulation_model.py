@@ -45,6 +45,10 @@ class CampusModel(Model):
 
 
     def step(self):
+        to_remove = [a for a in self.schedule.agents if getattr(a, 'should_remove', False)]
+        for agent in to_remove:
+            self.schedule.remove(agent)
+
         if self.fire_started:
             growth = random.uniform(FIRE_GROWTH_MIN, FIRE_GROWTH_MAX)
             if self.current_fire_radius > MAX_FIRE_RADIUS_SOFT_CAP:
@@ -86,3 +90,13 @@ class CampusModel(Model):
 
 
         self.schedule.step()
+
+
+    def is_near_any_smoke(self, x, y):
+        if not self.fire_started:
+            return False
+        for blob in self.smoke_blobs[::5]:
+            d = math.sqrt((x-blob['x'])**2 + (y - blob['y'])**2)
+            if d<blob['size']:
+                return True
+        return False

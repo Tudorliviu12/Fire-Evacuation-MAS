@@ -14,6 +14,7 @@ if __name__ == '__main__':
     n_stud = random.randint(TARGET_POPULATION_MIN, TARGET_POPULATION_MAX)
     model = CampusModel(G_all, G_drive, nodes, doors, n_students=n_stud)
     model.safe_nodes = safe
+    is_paused = False
 
     fig, ax = plt.subplots(figsize=(12,12))
 
@@ -23,18 +24,61 @@ if __name__ == '__main__':
     edges.plot(ax=ax, color='#bdc3c7', linewidth=0.5, alpha=0.5, zorder=1)
     ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=0)
 
-    scat = ax.scatter([], [], c='blue', s=20, zorder=10, label='Students')
+    scat = ax.scatter([], [], c='blue', s=20, zorder=10, label='Students', picker=5)
 
     fire_glow = ax.scatter([], [], c='red', s=40, edgecolors='none', alpha=0.2, zorder=5)
     fire_core = ax.scatter([], [], c='orange', s=40, edgecolors='none', alpha=0.8, zorder=6)
     smoke_scatter = ax.scatter([], [], c='gray', alpha=0.4, marker='o', edgecolors='none', zorder=8)
 
+    selected_agent_id = None
+    high_scat = ax.scatter([],[],c='lime', s=80, edgecolors='white', linewidth=2, zorder=11)
+    info_panel = ax.text(0.80, 0.95, "", transform=ax.transAxes,
+                         verticalalignment='top', horizontalalignment='center',
+                         fontsize=10, fontweight='bold', multialignment='center',
+                         bbox=dict(boxstyle='round',pad=0.5, facecolor='white', edgecolor='black', alpha=0.9))
+
+    def update_info_display(agent):
+        if agent:
+            status = "Panicked" if agent.is_panicked else "Calm"
+            if agent.is_dead:
+                status = "Dead"
+            text = (f"Name: {agent.full_name}\n"
+                    f"Home Dormitory: {agent.home_dorm}\n"
+                    f"Status: {status}\n"
+                    f"ID: {agent.unique_id}\n")
+            info_panel.set_text(text)
+            fig.canvas.draw_idle()
 
     def on_click(event):
         if event.inaxes == ax:
             model.ignite_fire(event.xdata, event.ydata)
 
+    def on_key(event):
+        global is_paused
+        if event.key == ' ':
+            if is_paused:
+                ani.event_source.start()
+                annot.set_visible(False)
+                ax.set_title("Simulation - Running")
+            else:
+                ani.event_source.stop()
+                ax.set_title("Simulation - Paused")
+            is_paused = not is_paused
+            fig.canvas.draw_idle()
+
+    def on_pick(event):
+        global selected_agent_id
+        index = event.ind[0]
+        all_agents = [a for a in model.schedule.agents if a.is_active]
+
+        if index<len(all_agents):
+            agent = all_agents[index]
+            selected_agent_id = agent.unique_id
+            update_info_display(agent)
+
     fig.canvas.mpl_connect('button_press_event', on_click)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    fig.canvas.mpl_connect('pick_event', on_pick)
 
     def update(frame):
         model.step()
@@ -69,11 +113,26 @@ if __name__ == '__main__':
         else:
             smoke_scatter.set_offsets(np.empty((0, 2)))
 
-        return scat, fire_glow, fire_core, smoke_scatter,
+        if selected_agent_id is not None:
+            target = next((a for a in model.schedule.agents if a.unique_id == selected_agent_id), None)
+            if target and target.is_active:
+                high_scat.set_offsets([(target.x, target.y)])
+                update_info_display(target)
+            else:
+                high_scat.set_offsets(np.empty((0, 2)))
+                info_panel.set_text("")
 
+        return scat, fire_glow, fire_core, smoke_scatter, high_scat
+
+
+    annot = ax.annotate("", xy=(0,0), xytext=(10,10),
+                        textcoords='offset points',
+                        bbox=dict(boxstyle='round', fc='white',
+                        edgecolor='black',alpha=0.8,),
+                        arrowprops=dict(arrowstyle='->'))
+    annot.set_visible(False)
 
     ax.set_axis_off()
-    ani = animation.FuncAnimation(fig, update, frames=500, interval=50, blit=True)
-    plt.title("Simulation")
-    plt.legend()
+    ani = animation.FuncAnimation(fig, update, frames=500, interval=50, blit=False)
+    plt.title("Simulare de incendiu - Tudor Vladimirescu")
     plt.show()

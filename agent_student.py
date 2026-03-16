@@ -3,14 +3,18 @@ import networkx as nx
 import osmnx as ox
 import math
 import random
-from config import CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
+from faker import Faker
+from config import STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from simulation_model import CampusModel
 
+fake = Faker('ro_RO')
+
 class Student(Agent):
     def __init__(self, unique_id, model: 'CampusModel', start_node, delay=0, indoors=False, building_idx=None):
         super().__init__(unique_id, model)
+        self.full_name = fake.name()
         self.model: 'CampusModel' = model
         self.is_active = False
         self.start_delay = delay
@@ -22,6 +26,21 @@ class Student(Agent):
         self.building_idx = building_idx
         self.personal_panic_threshold = random.uniform(PANIC_THRESHOLD_MIN, PANIC_THRESHOLD_MAX)
         self.personal_death_threshold = random.uniform(DEATH_THRESHOLD_MIN, DEATH_THRESHOLD_MAX)
+
+        if indoors:
+            self.is_indoors = True
+            self.home_dorm_idx = building_idx
+            self.home_dorm = f"T{building_idx + 1}"
+        else:
+            if random.random() < STUDENT_CHANCE:
+                self.is_resident = True
+                num_buildings = len(self.model.building_doors)
+                self.home_dorm_idx = random.randint(0, num_buildings-1)
+                self.home_dorm = f"T{self.home_dorm_idx + 1}"
+            else:
+                self.is_resident = False
+                self.home_dorm_idx = None
+                self.home_dorm = "None"
 
         if self.indoors and building_idx is not None:
             door_coords = self.model.building_doors[building_idx]

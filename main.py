@@ -3,6 +3,8 @@ import matplotlib.animation as animation
 import random
 import numpy as np
 import contextily as ctx
+from jupyter_core.paths import is_hidden
+
 from map_loader import *
 from simulation_model import CampusModel
 from config import TARGET_POPULATION_MIN, TARGET_POPULATION_MAX, SMOKE_LIFESPAN
@@ -42,8 +44,15 @@ if __name__ == '__main__':
             status = "Panicked" if agent.is_panicked else "Calm"
             if agent.is_dead:
                 status = "Dead"
+
+            destinatie = getattr(agent, 'target_name', "None")
+
+            if getattr(agent, 'is_hidden', False):
+                destinatie += " - inside"
+
             text = (f"Name: {agent.full_name}\n"
                     f"Home Dormitory: {agent.home_dorm}\n"
+                    f"Destination: {destinatie}\n"
                     f"Status: {status}\n"
                     f"ID: {agent.unique_id}\n")
             info_panel.set_text(text)

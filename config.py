@@ -41,3 +41,28 @@ DEATH_THRESHOLD_MIN = 1.5
 DEATH_THRESHOLD_MAX = 2.5
 
 STUDENT_CHANCE = 0.8
+GO_TO_DESTINATION_PROB = 0.7
+
+RAW_LOCATIONS = {
+    "Iulius Mall": (47.155319, 27.605095, 50),
+    "Cantina Tudor Vladimirescu": (47.154517, 27.609716, 40),
+    "Class": (47.156072, 27.604932, 20),
+    "Pizzeria Zano": (47.156282, 27.604243, 15),
+    "Luca": (47.155992, 27.604216, 20),
+    "Farmacia Dr. Max":  (47.156344, 27.603851, 5),
+    "Supermarket Tudor Aliment": (47.156510, 27.603667, 15),
+    "La Papa's - Casa Grătarului": (47.156708, 27.603472, 5),
+    "PIM - Copy Center": (47.156871, 27.603199, 10),
+    "Dispensarul studențesc": (47.155304, 27.609422, 10),
+    "Tucano Coffee": (47.154889, 27.604895, 20),
+    "Carrefour": (47.155712, 27.605049, 30),
+    "Lidl": (47.153135, 27.604784, 40),
+    "Kaufland": (47.152371, 27.604977, 25),
+    "Pepco": (47.153027, 27.605601, 5),
+    "Facultate": (47.155030, 27.603175, 65),
+    "Spre Copou": (47.177319, 27.569948, 15),
+    "Spre Gară": (47.168285, 27.567596, 15),
+    "Spre Podu Roș": (47.151197, 27.587447, 10),
+    "Spre Tătărași": (47.155468, 27.620691, 10),
+    "Spre Baza 3": (47.145378, 27.603905, 5)
+}

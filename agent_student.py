@@ -4,7 +4,7 @@ import osmnx as ox
 import math
 import random
 from faker import Faker
-from config import STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
+from config import GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from simulation_model import CampusModel
@@ -26,6 +26,12 @@ class Student(Agent):
         self.building_idx = building_idx
         self.personal_panic_threshold = random.uniform(PANIC_THRESHOLD_MIN, PANIC_THRESHOLD_MAX)
         self.personal_death_threshold = random.uniform(DEATH_THRESHOLD_MIN, DEATH_THRESHOLD_MAX)
+
+        self.target_name = ""
+        self.target_node = None
+        self.path = []
+        self.is_hidden = False
+        self.waiting_timer = 0
 
         if indoors:
             self.is_indoors = True
@@ -59,6 +65,17 @@ class Student(Agent):
         self.frames_current = 0
         self.frames_total = 0
 
+        self.choose_new_mission()
+
+    def recalculate_path(self):
+        try:
+            curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+            full_path = nx.shortest_path(self.model.G_all, curr_node, self.target_node, weight='length')
+            self.path = full_path[1:] if len(full_path) > 1 else []
+            self.frames_current = self.frames_total
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            self.path = []
+            print(f"Eroare: {self.full_name} nu gaseste drum spre {self.target_name}")
 
     def pick_random_destination(self):
         all_nodes = list(self.model.G_all.nodes())
@@ -72,13 +89,20 @@ class Student(Agent):
 
 
     def move(self):
+        if self.is_hidden:
+            self.waiting_timer -= 1
+            if self.waiting_timer <= 0:
+                self.is_hidden = False
+                self.choose_new_mission()
+            return
+
         if not self.path and self.frames_current >= self.frames_total:
-            if self.is_panicked:
+            self.is_hidden = True
+            self.waiting_timer = random.randint(50, 400)
+
+            if "Spre" in self.target_name:
                 self.should_remove = True
-                return
-            self.pick_random_destination()
-            if not self.path:
-                return
+            return
 
         if self.frames_current >= self.frames_total:
             next_node = self.path.pop(0)
@@ -164,6 +188,33 @@ class Student(Agent):
                 next_node = cand_nodes[0][0]
                 self.path = [next_node]
 
+    def choose_new_mission(self):
+        if random.random() < GO_TO_DESTINATION_PROB:
+            choice_idx = random.choices(
+                range(len(self.model.hotspot_names)),
+                weights=self.model.hotspot_weights,
+                k=1,
+            )[0]
+            self.target_name = self.model.hotspot_names[choice_idx]
+            self.target_node = self.model.hotspot_nodes[choice_idx]
+
+        else:
+            if self.home_dorm_idx is not None:
+                self.target_name = f"Cămin T{self.home_dorm_idx+1}"
+                self.target_node = self.model.dorm_nodes[self.home_dorm_idx]
+            else:
+                exit_options = [i for i, name in enumerate(self.model.hotspot_names) if "Spre" in name]
+                if exit_options:
+                    idx = random.choice(exit_options)
+                    self.target_name = self.model.hotspot_names[idx]
+                    self.target_node = self.model.hotspot_nodes[idx]
+                else:
+                    self.target_name = "Iulius Mall"
+                    self.target_node = self.model.hotspot_nodes[0]
+
+        self.recalculate_path()
+
+
     def die(self):
         self.is_dead = True
         self.color = 'black'
@@ -177,8 +228,6 @@ class Student(Agent):
                 if self.model.schedule.steps >= self.start_delay:
                     self.is_active = True
                 else: return
-            if self.is_dead:
-                return
 
         self.check_survival()
 
@@ -187,12 +236,5 @@ class Student(Agent):
 
         if self.model.schedule.steps % 20 == 0:
             self.check_surroundings()
-
-        if self.is_panicked:
-            curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-            if curr_node in self.model.safe_nodes:
-                self.should_remove = True
-                return
-            self.plan_next_move()
 
         self.move()

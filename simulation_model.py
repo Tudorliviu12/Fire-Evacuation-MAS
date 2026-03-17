@@ -1,11 +1,14 @@
 import mesa
 from mesa.time import RandomActivation
 from mesa import Model
+import osmnx as ox
 from agent_student import Student
+import geopandas as gpd
+from shapely.geometry import Point
 import random
 import math
 
-from config import MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, \
+from config import RAW_LOCATIONS, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, \
     SMOKE_GROWTH, SMOKE_LIFESPAN
 
 
@@ -27,12 +30,35 @@ class CampusModel(Model):
         self.smoke_blobs = []
         self.wind_angle = WIND_ANGLE
 
+        self.hotspot_names = list(RAW_LOCATIONS.keys())
+        self.hotspot_nodes = []
+        self.hotspot_weights = []
+
+        for name in self.hotspot_names:
+            lat_raw, lon_raw, weight = RAW_LOCATIONS[name]
+            p = gpd.GeoSeries([Point(lon_raw, lat_raw)], crs="EPSG:4326")
+            p_proj = p.to_crs("EPSG:3857").iloc[0]
+
+            node = ox.distance.nearest_nodes(self.G_all, p_proj.x, p_proj.y)
+            self.hotspot_nodes.append(node)
+            self.hotspot_weights.append(weight)
+
+        self.dorm_nodes = []
+        for coords in self.building_doors.values():
+            try:
+                node = ox.distance.nearest_nodes(self.G_all, coords[0], coords[1])
+                self.dorm_nodes.append(node)
+            except Exception as e:
+                print(f"Error in building door {coords} - {e}\n")
+
         all_nodes_ids = list(self.nodes_proj.index)
+
         for i in range(n_students):
             start_node = random.choice(all_nodes_ids)
             delay = 0
             a = Student(i, self, start_node, delay=delay, indoors=False)
             self.schedule.add(a)
+
 
     def ignite_fire(self, x, y):
         if self.fire_started:

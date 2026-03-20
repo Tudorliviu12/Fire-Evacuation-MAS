@@ -17,8 +17,11 @@ if __name__ == '__main__':
     model = CampusModel(G_all, G_drive, nodes, doors, n_students=n_stud)
     model.safe_nodes = safe
     is_paused = False
+    is_fire_mode = False
 
-    fig, ax = plt.subplots(figsize=(12,12))
+    plt.rcParams['keymap.fullscreen'].remove('f')
+
+    fig, ax = plt.subplots(figsize=(10,9))
 
     if not buildings.empty:
         buildings.plot(ax=ax, color='#a67c52', edgecolor='black', alpha=0.7, label='Dorms')
@@ -58,22 +61,30 @@ if __name__ == '__main__':
             info_panel.set_text(text)
             fig.canvas.draw_idle()
 
+    def update_status_title():
+        p_txt = "Paused" if is_paused else "Running"
+        f_txt = "Fire Mode On" if is_fire_mode else "Fire Mode Off"
+        title_text.set_text(f"Simulation - {p_txt} - {f_txt}")
+        fig.canvas.draw_idle()
+
     def on_click(event):
         if event.inaxes == ax:
-            model.ignite_fire(event.xdata, event.ydata)
+            if is_fire_mode:
+                model.ignite_fire(event.xdata, event.ydata)
 
     def on_key(event):
-        global is_paused
+        global is_paused, is_fire_mode
         if event.key == ' ':
-            if is_paused:
-                ani.event_source.start()
-                annot.set_visible(False)
-                ax.set_title("Simulation - Running")
-            else:
-                ani.event_source.stop()
-                ax.set_title("Simulation - Paused")
             is_paused = not is_paused
-            fig.canvas.draw_idle()
+            if is_paused:
+                ani.event_source.stop()
+            else:
+                ani.event_source.start()
+
+        if event.key in ['f', 'F']:
+            is_fire_mode = not is_fire_mode
+
+        update_status_title()
 
     def on_pick(event):
         global selected_agent_id
@@ -84,10 +95,8 @@ if __name__ == '__main__':
             agent = all_agents[index]
             selected_agent_id = agent.unique_id
             update_info_display(agent)
-
-    fig.canvas.mpl_connect('button_press_event', on_click)
-    fig.canvas.mpl_connect('key_press_event', on_key)
-    fig.canvas.mpl_connect('pick_event', on_pick)
+            high_scat.set_offsets([(agent.x, agent.y)])
+            fig.canvas.draw_idle()
 
     def update(frame):
         model.step()
@@ -133,6 +142,10 @@ if __name__ == '__main__':
 
         return scat, fire_glow, fire_core, smoke_scatter, high_scat
 
+    fig.canvas.mpl_connect('button_press_event', on_click)
+    fig.canvas.mpl_connect('key_press_event', on_key)
+    fig.canvas.mpl_connect('pick_event', on_pick)
+
 
     annot = ax.annotate("", xy=(0,0), xytext=(10,10),
                         textcoords='offset points',
@@ -142,6 +155,20 @@ if __name__ == '__main__':
     annot.set_visible(False)
 
     ax.set_axis_off()
+    title_text = ax.set_title("Tudor Vladimirescu - Simulation\nRunning - Fire Mode Off", fontsize=13, fontweight='bold', pad=10)
+
     ani = animation.FuncAnimation(fig, update, frames=500, interval=50, blit=False)
-    plt.title("Simulare de incendiu - Tudor Vladimirescu")
-    plt.show()
+
+
+    manager = plt.get_current_fig_manager()
+    try:
+        manager.window.wm_geometry("+160+20")
+    except Exception as e:
+        pass
+
+    plt.tight_layout()
+
+    try:
+        plt.show()
+    except KeyboardInterrupt:
+        plt.close('all')

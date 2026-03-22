@@ -64,7 +64,7 @@ if __name__ == '__main__':
     def update_status_title():
         p_txt = "Paused" if is_paused else "Running"
         f_txt = "Fire Mode On" if is_fire_mode else "Fire Mode Off"
-        title_text.set_text(f"Simulation - {p_txt} - {f_txt}")
+        ax.set_title(f"Simulation - {p_txt} - {f_txt}", fontsize=13, fontweight='bold', pad=10)
         fig.canvas.draw_idle()
 
     def on_click(event):
@@ -89,7 +89,7 @@ if __name__ == '__main__':
     def on_pick(event):
         global selected_agent_id
         index = event.ind[0]
-        all_agents = [a for a in model.schedule.agents if a.is_active]
+        all_agents = [a for a in model.schedule.agents if a.is_active and not getattr(a, 'is_hidden', False)]
 
         if index<len(all_agents):
             agent = all_agents[index]
@@ -100,7 +100,7 @@ if __name__ == '__main__':
 
     def update(frame):
         model.step()
-        agents = [a for a in model.schedule.agents if a.is_active]
+        agents = [a for a in model.schedule.agents if a.is_active and not getattr(a, 'is_hidden', False)]
         if agents:
             offsets = [(a.x, a.y) for a in agents]
             colors = [a.color for a in agents]
@@ -168,7 +168,4 @@ if __name__ == '__main__':
 
     plt.tight_layout()
 
-    try:
-        plt.show()
-    except KeyboardInterrupt:
-        plt.close('all')
+    plt.show()

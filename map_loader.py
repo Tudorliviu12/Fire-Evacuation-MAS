@@ -1,7 +1,8 @@
 import osmnx as ox
+import networkx as nx
 import geopandas as gpd
-from shapely.geometry import Point, MultiPoint
-from shapely.ops import nearest_points
+from shapely.geometry import Point, MultiPoint, LineString
+from shapely.ops import nearest_points, unary_union
 from config import MAP_CENTER, MAP_DIST, GEOJSON_FILE
 
 def load_campus_map():
@@ -20,6 +21,30 @@ def load_campus_map():
     buildings_gdf = gpd.read_file(GEOJSON_FILE)
     buildings_gdf = buildings_gdf.to_crs("EPSG:3857")
     print(f"Buildings map load successfully ({len(buildings_gdf)} buildings)\n")
+
+    all_buildings_shape = unary_union(buildings_gdf.geometry)
+    edges_to_remove = []
+
+    for u,v,k,data in G_all.edges(data=True, keys=True):
+        if 'geometry' in data:
+            edge_geom = data['geometry']
+        else:
+            node_u = nodes_proj.loc[u]
+            node_v = nodes_proj.loc[v]
+            edge_geom = LineString([(node_u.geometry.x, node_u.geometry.y), (node_v.geometry.x, node_v.geometry.y)])
+
+        if edge_geom.intersects(all_buildings_shape):
+            overleap = edge_geom.intersection(all_buildings_shape)
+            if hasattr(overleap, 'length') and overleap.length > 3.0:
+                edges_to_remove.append((u, v, k))
+
+    for u,v,k in edges_to_remove:
+        G_all.remove_edge(u, v, key=k)
+
+    largest_cc = max(nx.connected_components(G_all), key=len)
+    G_all = G_all.subgraph(largest_cc).copy()
+
+    nodes_proj, edges_proj = ox.graph_to_gdfs(G_all)
 
     safe_nodes = [
         nodes_proj.geometry.y.idxmax(),

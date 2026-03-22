@@ -4,6 +4,8 @@ import osmnx as ox
 import math
 import random
 from faker import Faker
+from shapely.speedups import available
+
 from config import GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -67,22 +69,34 @@ class Student(Agent):
 
         self.choose_new_mission()
 
-    def recalculate_path(self):
+    def recalculate_path(self, retries=3):
         try:
-            curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-            full_path = nx.shortest_path(self.model.G_all, curr_node, self.target_node, weight='length')
+            curr_node = ox.distance.nearest_nodes(self.model.G_working, self.x, self.y)
+            full_path = nx.shortest_path(self.model.G_working, curr_node, self.target_node, weight='length')
             self.path = full_path[1:] if len(full_path) > 1 else []
             self.frames_current = self.frames_total
         except (nx.NetworkXNoPath, nx.NodeNotFound):
-            self.path = []
-            print(f"Eroare: {self.full_name} nu gaseste drum spre {self.target_name}")
+            if retries>0:
+                available = [
+                    i for i, name in enumerate(self.model.hotspot_names)
+                    if self.model.hotspot_nodes[i] != self.target_node
+                ]
+                if available:
+                    choice_idx = random.choices(available, weights=[self.model.hotspot_weights[i] for i in available], k=1)[0]
+                    self.target_name = self.model.hotspot_names[choice_idx]
+                    self.target_node = self.model.hotspot_nodes[choice_idx]
+                    self.recalculate_path(retries=retries-1)
+                else:
+                    self.path = []
+
+
 
     def pick_random_destination(self):
-        all_nodes = list(self.model.G_all.nodes())
+        all_nodes = list(self.model.G_working.nodes())
         target_node = random.choice(all_nodes)
         try:
-            current_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-            full_path = nx.shortest_path(self.model.G_all, current_node, target_node, weight='length')
+            current_node = ox.distance.nearest_nodes(self.model.G_working, self.x, self.y)
+            full_path = nx.shortest_path(self.model.G_working, current_node, target_node, weight='length')
             self.path = full_path[1:] if len(full_path) > 1 else []
         except (nx.NetworkXNoPath, nx.NodeNotFound):
             self.path = []
@@ -97,21 +111,33 @@ class Student(Agent):
             return
 
         if not self.path and self.frames_current >= self.frames_total:
+            if self.is_panicked:
+                self.recalculate_path()
+                if not self.path:
+                    self.should_remove = True
+                return
             self.is_hidden = True
-            self.waiting_timer = random.randint(50, 400)
-
-            if "Spre" in self.target_name:
+            self.waiting_timer = random.randint(50,400)
+            if "Going To" in self.target_name:
                 self.should_remove = True
             return
 
         if self.frames_current >= self.frames_total:
+            next_node = self.path[0]
+            try:
+                curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                if not self.model.G_working.has_edge(curr_node, next_node):
+                    self.recalculate_path()
+                    return
+            except Exception as e:
+                pass
+
             next_node = self.path.pop(0)
             node_data = self.model.nodes_proj.loc[next_node]
-
             self.start_x, self.start_y = self.x, self.y
             self.end_x, self.end_y = node_data.geometry.x, node_data.geometry.y
 
-            dist = ((self.end_x - self.start_x) ** 2 + (self.end_y - self.start_y) ** 2) ** 0.5
+            dist = ((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)**0.5
             self.frames_total = max(1, int(dist/self.current_speed))
             self.frames_current = 0
 
@@ -125,15 +151,7 @@ class Student(Agent):
         self.is_panicked = True
         self.color = 'red'
         self.current_speed = self.panic_speed
-        if self.model.safe_nodes:
-            target = random.choice(self.model.safe_nodes)
-            try:
-                current_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-                full_path = nx.shortest_path(self.model.G_all, current_node, target, weight='length')
-                self.path = full_path[1:]
-                self.frames_current = self.frames_total
-            except:
-                self.path = []
+        self.recalculate_path()
 
     def check_survival(self):
         if self.is_dead or not self.model.fire_started:
@@ -203,7 +221,7 @@ class Student(Agent):
                 self.target_name = f"Cămin T{self.home_dorm_idx+1}"
                 self.target_node = self.model.dorm_nodes[self.home_dorm_idx]
             else:
-                exit_options = [i for i, name in enumerate(self.model.hotspot_names) if "Spre" in name]
+                exit_options = [i for i, name in enumerate(self.model.hotspot_names) if "Going To" in name]
                 if exit_options:
                     idx = random.choice(exit_options)
                     self.target_name = self.model.hotspot_names[idx]

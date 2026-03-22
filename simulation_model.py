@@ -2,6 +2,8 @@ import mesa
 from mesa.time import RandomActivation
 from mesa import Model
 import osmnx as ox
+from shapely import LineString
+
 from agent_student import Student
 import geopandas as gpd
 from shapely.geometry import Point
@@ -29,6 +31,8 @@ class CampusModel(Model):
         self.safe_nodes = []
         self.smoke_blobs = []
         self.wind_angle = WIND_ANGLE
+        self.burned_edges = set()
+        self.G_working = self.G_all.copy()
 
         self.hotspot_names = list(RAW_LOCATIONS.keys())
         self.hotspot_nodes = []
@@ -68,6 +72,41 @@ class CampusModel(Model):
         self.fire_center_x = x
         self.fire_center_y = y
         self.current_fire_radius = 1.5
+
+    def block_fire_edges(self):
+        if not self.fire_started or self.schedule.steps % 5 != 0:
+            return
+
+        fire_pt = Point(self.fire_center_x, self.fire_center_y)
+
+        for u,v,k,data in self.G_all.edges(keys=True, data=True):
+            if(u,v,k) in self.burned_edges:
+                continue
+
+            if 'geometry' in data:
+                edge_geom = data['geometry']
+            else:
+                nx_u, ny_u = self.G_all.nodes[u]['x'], self.G_all.nodes[u]['y']
+                nx_v, ny_v = self.G_all.nodes[v]['x'], self.G_all.nodes[v]['y']
+                edge_geom = LineString([(nx_u, ny_u), (nx_v, ny_v)])
+
+            dist = fire_pt.distance(edge_geom)
+            if dist < self.current_fire_radius + 5.0:
+                self.burned_edges.add((u,v,k))
+                if self.G_working.has_edge(u,v,k):
+                    self.G_working.remove_edge(u,v,key=k)
+
+            nx_u = self.G_all.nodes[u]['x']
+            ny_u = self.G_all.nodes[u]['y']
+            nx_v = self.G_all.nodes[v]['x']
+            ny_v = self.G_all.nodes[v]['y']
+            mid_x = (nx_u + nx_v) / 2
+            mid_y = (ny_u + ny_v) / 2
+            dist = math.sqrt((mid_x - self.fire_center_x)**2 + (mid_y - self.fire_center_y)**2)
+            if dist < self.current_fire_radius:
+                self.burned_edges.add((u,v,k))
+                if self.G_working.has_edge(u,v,k):
+                    self.G_working.remove_edge(u,v,key=k)
 
 
     def step(self):
@@ -114,7 +153,7 @@ class CampusModel(Model):
                 if smoke['age'] > SMOKE_LIFESPAN:
                     self.smoke_blobs.pop(i)
 
-
+        self.block_fire_edges()
         self.schedule.step()
 
 

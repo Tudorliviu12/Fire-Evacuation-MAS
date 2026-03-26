@@ -1,6 +1,7 @@
 import osmnx as ox
 import networkx as nx
 import geopandas as gpd
+import pandas as pd
 from shapely.geometry import Point, MultiPoint, LineString
 from shapely.ops import nearest_points, unary_union
 from config import MAP_CENTER, MAP_DIST, GEOJSON_FILE
@@ -18,12 +19,16 @@ def load_campus_map():
 
     print("Street map load successfully\n")
 
-    buildings_gdf = gpd.read_file(GEOJSON_FILE)
-    buildings_gdf = buildings_gdf.to_crs("EPSG:3857")
-    print(f"Buildings map load successfully ({len(buildings_gdf)} buildings)\n")
+    dorms_gdf = gpd.read_file(GEOJSON_FILE)
+    dorms_gdf = dorms_gdf.to_crs("EPSG:3857")
+    dorms_gdf['is_dorm'] = True
+
+    buildings_gdf = dorms_gdf.copy()
+    print(f"Buildings map load successfully, {len(buildings_gdf)} dorms loaded\n")
 
     all_buildings_shape = unary_union(buildings_gdf.geometry)
     edges_to_remove = []
+
 
     for u,v,k,data in G_all.edges(data=True, keys=True):
         if 'geometry' in data:
@@ -43,6 +48,9 @@ def load_campus_map():
 
     largest_cc = max(nx.connected_components(G_all), key=len)
     G_all = G_all.subgraph(largest_cc).copy()
+
+    single_nodes = [n for n, d in G_all.degree() if d==0]
+    G_all.remove_nodes_from(single_nodes)
 
     nodes_proj, edges_proj = ox.graph_to_gdfs(G_all)
 

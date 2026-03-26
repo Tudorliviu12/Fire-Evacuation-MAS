@@ -4,7 +4,7 @@ import osmnx as ox
 import math
 import random
 from faker import Faker
-from shapely.speedups import available
+from pathfinder import DStarLite
 
 from config import GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
@@ -35,15 +35,14 @@ class Student(Agent):
         self.is_hidden = False
         self.waiting_timer = 0
 
-        if indoors:
-            self.is_indoors = True
+        if indoors and building_idx is not None and building_idx < 22:
+            self.is_resident = True
             self.home_dorm_idx = building_idx
             self.home_dorm = f"T{building_idx + 1}"
         else:
             if random.random() < STUDENT_CHANCE:
                 self.is_resident = True
-                num_buildings = len(self.model.building_doors)
-                self.home_dorm_idx = random.randint(0, num_buildings-1)
+                self.home_dorm_idx = random.randint(0, 21)
                 self.home_dorm = f"T{self.home_dorm_idx + 1}"
             else:
                 self.is_resident = False
@@ -51,8 +50,8 @@ class Student(Agent):
                 self.home_dorm = "None"
 
         if self.indoors and building_idx is not None:
-            door_coords = self.model.building_doors[building_idx]
-            self.x, self.y = door_coords
+            building_agent = self.model.buildings[building_idx]
+            self.x, self.y = building_agent.door_coords
         else:
             node_data = self.model.nodes_proj.loc[start_node]
             self.x, self.y = node_data.geometry.x, node_data.geometry.y
@@ -67,15 +66,23 @@ class Student(Agent):
         self.frames_current = 0
         self.frames_total = 0
 
+        self.dstar = None
         self.choose_new_mission()
 
-    def recalculate_path(self, retries=3):
+    def recalculate_path(self, retries=1):
         try:
             curr_node = ox.distance.nearest_nodes(self.model.G_working, self.x, self.y)
-            full_path = nx.shortest_path(self.model.G_working, curr_node, self.target_node, weight='length')
+            if not self.model.G_working.has_node(curr_node) or not self.model.G_working.has_node(self.target_node):
+                raise nx.NodeNotFound("Node not found")
+            self.dstar = DStarLite(self.model.G_working, curr_node, self.target_node)
+            self.dstar.compute_shortest_path()
+            full_path = self.dstar.get_path()
+            if not full_path:
+                raise nx.NetworkXNoPath("No Path")
             self.path = full_path[1:] if len(full_path) > 1 else []
             self.frames_current = self.frames_total
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
+
+        except Exception:
             if retries>0:
                 available = [
                     i for i, name in enumerate(self.model.hotspot_names)
@@ -88,8 +95,37 @@ class Student(Agent):
                     self.recalculate_path(retries=retries-1)
                 else:
                     self.path = []
+                    self.dstar = None
+            else:
+                self.path = []
+                self.dstar = None
 
+    def notify_edge_burned(self, u, v):
+        if self.dstar is None or self.is_dead or not self.is_active:
+            return
 
+        try:
+            curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+        except Exception:
+            return
+
+        full_remaining_path = [curr_node] + self.path
+        path_affected = False
+
+        if len(full_remaining_path) >= 2:
+            for i in range(len(full_remaining_path) - 1):
+                if(full_remaining_path[i] == u and full_remaining_path[i + 1] == v) or (full_remaining_path[i] == v and full_remaining_path[i+1] == u):
+                    path_affected = True
+                    break
+
+        if path_affected:
+            self.dstar.graph = self.model.G_working
+            self.dstar.notify_edge_changed(u,v)
+            new_path = self.dstar.get_path()
+            if new_path:
+                self.path = new_path[1:] if len(new_path) > 1 else []
+            else:
+                self.recalculate_path(retries=2)
 
     def pick_random_destination(self):
         all_nodes = list(self.model.G_working.nodes())
@@ -133,6 +169,12 @@ class Student(Agent):
                 pass
 
             next_node = self.path.pop(0)
+
+            if self.dstar:
+                if next_node != self.dstar.start:
+                    self.dstar.k_m += self.dstar.heuristic(self.dstar.start, next_node)
+                    self.dstar.start = next_node
+
             node_data = self.model.nodes_proj.loc[next_node]
             self.start_x, self.start_y = self.x, self.y
             self.end_x, self.end_y = node_data.geometry.x, node_data.geometry.y
@@ -188,7 +230,6 @@ class Student(Agent):
         if panicked_nearby >= 2:
             if random.random() < 0.1:
                 self.become_panicked()
-
 
     def plan_next_move(self):
         if len(self.path) == 0:

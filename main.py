@@ -3,8 +3,6 @@ import matplotlib.animation as animation
 import random
 import numpy as np
 import contextily as ctx
-from jupyter_core.paths import is_hidden
-
 from map_loader import *
 from simulation_model import CampusModel
 from config import TARGET_POPULATION_MIN, TARGET_POPULATION_MAX, SMOKE_LIFESPAN
@@ -14,7 +12,7 @@ if __name__ == '__main__':
     G_all, G_drive, nodes, edges, buildings, doors, safe = load_campus_map()
 
     n_stud = random.randint(TARGET_POPULATION_MIN, TARGET_POPULATION_MAX)
-    model = CampusModel(G_all, G_drive, nodes, doors, n_students=n_stud)
+    model = CampusModel(G_all, G_drive, nodes, buildings, doors, n_students=n_stud)
     model.safe_nodes = safe
     is_paused = False
     is_fire_mode = False
@@ -24,7 +22,8 @@ if __name__ == '__main__':
     fig, ax = plt.subplots(figsize=(10,9))
 
     if not buildings.empty:
-        buildings.plot(ax=ax, color='#a67c52', edgecolor='black', alpha=0.7, label='Dorms')
+        dorms = buildings[buildings['is_dorm'] == True]
+        dorms.plot(ax=ax, color='#a67c52', edgecolor='black', alpha=0.7, label='Dorms')
 
     edges.plot(ax=ax, color='#bdc3c7', linewidth=0.5, alpha=0.5, zorder=1)
     ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=0)

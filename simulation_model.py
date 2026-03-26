@@ -3,23 +3,24 @@ from mesa.time import RandomActivation
 from mesa import Model
 import osmnx as ox
 from shapely import LineString
-
 from agent_student import Student
 import geopandas as gpd
+import pandas as pd
 from shapely.geometry import Point
 import random
 import math
-
+from building import Building
 from config import RAW_LOCATIONS, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, \
     SMOKE_GROWTH, SMOKE_LIFESPAN
 
 
 class CampusModel(Model):
-    def __init__(self, G_all, G_drive, nodes_proj, doors, n_students):
+    def __init__(self, G_all, G_drive, nodes_proj, buildings_gdf, doors, n_students):
         super().__init__()
         self.G_all = G_all
         self.G_drive = G_drive
         self.nodes_proj = nodes_proj
+        self.buildings_gdf = buildings_gdf
         self.building_doors = doors
         self.schedule = mesa.time.RandomActivation(self)
         self.n_students = n_students
@@ -57,11 +58,41 @@ class CampusModel(Model):
 
         all_nodes_ids = list(self.nodes_proj.index)
 
+        self.buildings = []
+        self.buildings_weights = []
+
+        for idx, row in self.buildings_gdf.iterrows():
+            door_coords = self.building_doors[idx]
+            door_node = ox.distance.nearest_nodes(self.G_all, door_coords[0], door_coords[1])
+            area = row.geometry.area
+
+            name = row.get('nume_Camin', f"Camin_T{idx+1}")
+            b = Building(name=name, door_node=door_node, door_coords=door_coords, area=area)
+            self.buildings.append(b)
+            self.buildings_weights.append(area)
+
+        for i, name in enumerate(self.hotspot_names):
+            node = self.hotspot_nodes[i]
+            node_data = self.nodes_proj.loc[node]
+            door_coords = (node_data.geometry.x, node_data.geometry.y)
+
+            area_weight = self.hotspot_weights[i] * 50
+            b = Building(name=name, door_node=node, door_coords=door_coords, area=area_weight)
+            self.buildings.append(b)
+            self.buildings_weights.append(area_weight)
+
         for i in range(n_students):
-            start_node = random.choice(all_nodes_ids)
-            delay = 0
-            a = Student(i, self, start_node, delay=delay, indoors=False)
-            self.schedule.add(a)
+            if random.random() < 0.3:
+                start_node = random.choice(all_nodes_ids)
+                a = Student(i, self, start_node, delay=0, indoors=False)
+                self.schedule.add(a)
+            else:
+                chosen_idx = random.choices(range(len(self.buildings)), weights=self.buildings_weights, k=1)[0]
+                chosen_building = self.buildings[chosen_idx]
+                a = Student(i, self, start_node=None, delay=0, indoors=True, building_idx=chosen_idx)
+                a.is_hidden = True
+                chosen_building.inventory.append(a)
+                self.schedule.add(a)
 
 
     def ignite_fire(self, x, y):
@@ -92,9 +123,11 @@ class CampusModel(Model):
 
             dist = fire_pt.distance(edge_geom)
             if dist < self.current_fire_radius + 5.0:
-                self.burned_edges.add((u,v,k))
-                if self.G_working.has_edge(u,v,k):
-                    self.G_working.remove_edge(u,v,key=k)
+                if (u,v,k) not in self.burned_edges:
+                    self.burned_edges.add((u,v,k))
+                    if self.G_working.has_edge(u,v,key=k):
+                        self.G_working.remove_edge(u,v,key=k)
+                        self.notify_agents_edge_burned(u,v)
 
             nx_u = self.G_all.nodes[u]['x']
             ny_u = self.G_all.nodes[u]['y']
@@ -104,10 +137,26 @@ class CampusModel(Model):
             mid_y = (ny_u + ny_v) / 2
             dist = math.sqrt((mid_x - self.fire_center_x)**2 + (mid_y - self.fire_center_y)**2)
             if dist < self.current_fire_radius:
-                self.burned_edges.add((u,v,k))
-                if self.G_working.has_edge(u,v,k):
-                    self.G_working.remove_edge(u,v,key=k)
+                if (u,v,k) not in self.burned_edges:
+                    self.burned_edges.add((u, v, k))
+                    if self.G_working.has_edge(u,v,k):
+                        self.G_working.remove_edge(u, v, key=k)
+                        self.notify_agents_edge_burned(u, v)
 
+    def check_buildings_fire(self):
+        if not self.fire_started:
+            return
+        for building in self.buildings:
+            if not building.is_on_fire:
+                dist = math.sqrt((building.door_coords[0] - self.fire_center_x)**2 + (building.door_coords[1] - self.fire_center_y)**2)
+                if dist<(self.current_fire_radius + 30.0):
+                    building.is_on_fire = True
+            building.evacuate_step()
+
+    def notify_agents_edge_burned(self, u, v):
+        for agent in self.schedule.agents:
+            if hasattr(agent, 'notify_edge_burned') and agent.is_active and not agent.is_dead:
+                agent.notify_edge_burned(u, v)
 
     def step(self):
         to_remove = [a for a in self.schedule.agents if getattr(a, 'should_remove', False)]

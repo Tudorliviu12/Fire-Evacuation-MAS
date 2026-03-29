@@ -3,6 +3,8 @@ import matplotlib.animation as animation
 import random
 import numpy as np
 import contextily as ctx
+from IPython.core.pylabtools import figsize
+
 from map_loader import *
 from simulation_model import CampusModel
 from config import TARGET_POPULATION_MIN, TARGET_POPULATION_MAX, SMOKE_LIFESPAN
@@ -19,7 +21,9 @@ if __name__ == '__main__':
 
     plt.rcParams['keymap.fullscreen'].remove('f')
 
-    fig, ax = plt.subplots(figsize=(10,9))
+    fig, (ax, ax_menu) = plt.subplots(1, 2, gridspec_kw={'width_ratios':[4, 1.2]}, figsize=(14,9))
+    ax_menu.set_axis_off()
+    menu_text = ax_menu.text(0.05, 0.95, "", transform=ax_menu.transAxes, verticalalignment='top', fontsize=10, bbox=dict(boxstyle='round', facecolor='#f8f9fa', edgecolor='gray', alpha=0.8))
 
     if not buildings.empty:
         dorms = buildings[buildings['is_dorm'] == True]
@@ -39,7 +43,7 @@ if __name__ == '__main__':
     info_panel = ax.text(0.80, 0.95, "", transform=ax.transAxes,
                          verticalalignment='top', horizontalalignment='center',
                          fontsize=10, fontweight='bold', multialignment='center',
-                         bbox=dict(boxstyle='round',pad=0.5, facecolor='white', edgecolor='black', alpha=0.9))
+                         bbox=dict(boxstyle='round',pad=0.5, facecolor='white', edgecolor='black', alpha=0.9), zorder=999)
 
     def update_info_display(agent):
         if agent:
@@ -133,11 +137,33 @@ if __name__ == '__main__':
         if selected_agent_id is not None:
             target = next((a for a in model.schedule.agents if a.unique_id == selected_agent_id), None)
             if target and target.is_active:
-                high_scat.set_offsets([(target.x, target.y)])
                 update_info_display(target)
+                if getattr(target, 'is_hidden', False):
+                    high_scat.set_offsets([(target.x, target.y)])
+                else:
+                    high_scat.set_offsets([(target.x, target.y)])
             else:
                 high_scat.set_offsets(np.empty((0, 2)))
                 info_panel.set_text("")
+
+        burning_buildings = [b for b in model.buildings if b.is_on_fire]
+        if burning_buildings:
+            b = burning_buildings[0]
+            txt = f"Fire at {b.name}\n People stuck inside: {len(b.inventory)}\n"
+            names = [a.full_name for a in b.inventory[:20]]
+            txt += "\n".join(names) + "\n"
+            if len(b.inventory) > 20:
+                txt += f"\n...and other {len(b.inventory) - 15} people stuck inside\n"
+            menu_text.set_text(txt)
+            menu_text.set_bbox(dict(boxstyle='round', facecolor='#ffcccc', edgecolor='red', alpha=0.9))
+        else:
+            sorted_buildings = sorted(model.buildings, key=lambda x:len(x.inventory), reverse=True)
+            txt = "Campus Status:\n"
+            for b in sorted_buildings[:12]:
+                if len(b.inventory) > 0:
+                    txt += f"- {b.name}: {len(b.inventory)} people\n"
+            menu_text.set_text(txt)
+            menu_text.set_bbox(dict(boxstyle='round', facecolor='#e6f2ff', edgecolor='red', alpha=0.9))
 
         return scat, fire_glow, fire_core, smoke_scatter, high_scat
 
@@ -157,7 +183,6 @@ if __name__ == '__main__':
     title_text = ax.set_title("Tudor Vladimirescu - Simulation\nRunning - Fire Mode Off", fontsize=13, fontweight='bold', pad=10)
 
     ani = animation.FuncAnimation(fig, update, frames=500, interval=50, blit=False)
-
 
     manager = plt.get_current_fig_manager()
     try:

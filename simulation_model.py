@@ -34,7 +34,7 @@ class CampusModel(Model):
         self.wind_angle = WIND_ANGLE
         self.burned_edges = set()
         self.G_working = self.G_all.copy()
-
+        self.active_agents_cache = []
         self.hotspot_names = list(RAW_LOCATIONS.keys())
         self.hotspot_nodes = []
         self.hotspot_weights = []
@@ -76,13 +76,13 @@ class CampusModel(Model):
             node_data = self.nodes_proj.loc[node]
             door_coords = (node_data.geometry.x, node_data.geometry.y)
 
-            area_weight = self.hotspot_weights[i] * 50
+            area_weight = self.hotspot_weights[i] * 400
             b = Building(name=name, door_node=node, door_coords=door_coords, area=area_weight)
             self.buildings.append(b)
             self.buildings_weights.append(area_weight)
 
         for i in range(n_students):
-            if random.random() < 0.3:
+            if random.random() < 0.1:
                 start_node = random.choice(all_nodes_ids)
                 a = Student(i, self, start_node, delay=0, indoors=False)
                 self.schedule.add(a)
@@ -91,9 +91,10 @@ class CampusModel(Model):
                 chosen_building = self.buildings[chosen_idx]
                 a = Student(i, self, start_node=None, delay=0, indoors=True, building_idx=chosen_idx)
                 a.is_hidden = True
+                a.waiting_timer = random.randint(50,800)
+                a.current_building = chosen_building
                 chosen_building.inventory.append(a)
                 self.schedule.add(a)
-
 
     def ignite_fire(self, x, y):
         if self.fire_started:
@@ -154,12 +155,16 @@ class CampusModel(Model):
             building.evacuate_step()
 
     def notify_agents_edge_burned(self, u, v):
-        for agent in self.schedule.agents:
-            if hasattr(agent, 'notify_edge_burned') and agent.is_active and not agent.is_dead:
+        for agent in self.active_agents_cache:
+            if not agent.is_dead and not agent.is_hidden:
                 agent.notify_edge_burned(u, v)
 
     def step(self):
         to_remove = [a for a in self.schedule.agents if getattr(a, 'should_remove', False)]
+        self.active_agents_cache = [
+            a for a in self.schedule.agents
+            if getattr(a, 'is_active', False) and not getattr(a, 'is_dead', False)
+        ]
         for agent in to_remove:
             self.schedule.remove(agent)
 
@@ -203,6 +208,8 @@ class CampusModel(Model):
                     self.smoke_blobs.pop(i)
 
         self.block_fire_edges()
+        if self.fire_started and self.schedule.steps % 3 == 0:
+            self.check_buildings_fire()
         self.schedule.step()
 
 

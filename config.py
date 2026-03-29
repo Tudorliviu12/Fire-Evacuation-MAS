@@ -8,8 +8,8 @@ SMOKE_LIFESPAN = 60
 SMOKE_GROWTH = 0.4
 SMOKE_SPEED = 0.8
 
-TARGET_POPULATION_MIN = 250 #de modificat in functie de baza de date
-TARGET_POPULATION_MAX = 350
+TARGET_POPULATION_MIN = 1000
+TARGET_POPULATION_MAX = 1500
 
 FIREFIGHTER_SPEED = 6.0
 TRUCK_DELAY_MIN = 80
@@ -44,8 +44,8 @@ STUDENT_CHANCE = 0.8
 GO_TO_DESTINATION_PROB = 0.7
 
 RAW_LOCATIONS = {
-    "Iulius Mall": (47.155319, 27.605095, 50),
-    "Cantina Tudor Vladimirescu": (47.154517, 27.609716, 40),
+    "Iulius Mall": (47.155319, 27.605095, 300),
+    "Cantina Tudor Vladimirescu": (47.154517, 27.609716, 150),
     "Class": (47.156072, 27.604932, 20),
     "Pizzeria Zano": (47.156282, 27.604243, 15),
     "Luca": (47.155992, 27.604216, 20),
@@ -59,7 +59,7 @@ RAW_LOCATIONS = {
     "Lidl": (47.153135, 27.604784, 40),
     "Kaufland": (47.152371, 27.604977, 25),
     "Pepco": (47.153027, 27.605601, 5),
-    "Facultate": (47.155030, 27.603175, 65),
+    "Facultate": (47.155030, 27.603175, 150),
     "Going To Copou": (47.177319, 27.569948, 15),
     "Going To Palas Mall": (47.157176, 27.587064, 15),
     "Going To Podu Roș": (47.151197, 27.587447, 10),

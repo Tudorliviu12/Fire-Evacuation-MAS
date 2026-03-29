@@ -5,7 +5,7 @@ import math
 import random
 from faker import Faker
 from pathfinder import DStarLite
-
+from building import Building
 from config import GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -21,6 +21,7 @@ class Student(Agent):
         self.is_active = False
         self.start_delay = delay
         self.is_dead = False
+        self.is_aware = False
         self.is_panicked = False
         self.color = 'blue'
         self.should_remove = False
@@ -65,6 +66,7 @@ class Student(Agent):
         self.path = []
         self.frames_current = 0
         self.frames_total = 0
+        self.current_building = None
 
         self.dstar = None
         self.choose_new_mission()
@@ -101,22 +103,14 @@ class Student(Agent):
                 self.dstar = None
 
     def notify_edge_burned(self, u, v):
-        if self.dstar is None or self.is_dead or not self.is_active:
+        if self.dstar is None or self.is_dead or not self.is_active or not self.path:
             return
 
-        try:
-            curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-        except Exception:
-            return
-
-        full_remaining_path = [curr_node] + self.path
         path_affected = False
-
-        if len(full_remaining_path) >= 2:
-            for i in range(len(full_remaining_path) - 1):
-                if(full_remaining_path[i] == u and full_remaining_path[i + 1] == v) or (full_remaining_path[i] == v and full_remaining_path[i+1] == u):
-                    path_affected = True
-                    break
+        for i in range(len(self.path) - 1):
+            if (self.path[i] == u and self.path[i + 1] == v) or (self.path[i] == v and self.path[i + 1] == u):
+                path_affected = True
+                break
 
         if path_affected:
             self.dstar.graph = self.model.G_working
@@ -125,7 +119,7 @@ class Student(Agent):
             if new_path:
                 self.path = new_path[1:] if len(new_path) > 1 else []
             else:
-                self.recalculate_path(retries=2)
+                self.recalculate_path(retries=1)
 
     def pick_random_destination(self):
         all_nodes = list(self.model.G_working.nodes())
@@ -142,32 +136,60 @@ class Student(Agent):
         if self.is_hidden:
             self.waiting_timer -= 1
             if self.waiting_timer <= 0:
-                self.is_hidden = False
-                self.choose_new_mission()
+                building_agent = self.current_building
+                if building_agent:
+                    if "Mall" in building_agent.name or "T" in building_agent.name: threshold = 40
+                    elif "Facultate" in building_agent.name or "Cantina in ": threshold = 30
+                    else: threshold = 3
+                    if len(building_agent.inventory) > threshold or self.is_aware:
+                        building_agent.inventory.remove(self)
+                        self.current_building = None
+                        self.is_hidden = False
+                        self.x, self.y = building_agent.door_coords
+                        self.start_x, self.start_y = self.x, self.y
+                        self.choose_new_mission()
+                    else:
+                        self.waiting_timer = random.randint(250,500)
+                else:
+                    self.is_hidden = False
+                    self.choose_new_mission()
             return
 
         if not self.path and self.frames_current >= self.frames_total:
-            if self.is_panicked:
-                self.recalculate_path()
+            if self.is_aware:
+                self.recalculate_path(retries=1)
                 if not self.path:
-                    self.should_remove = True
+                    dx = self.x - self.model.fire_center_x
+                    dy = self.y - self.model.fire_center_y
+                    dist = math.sqrt(dx**2 + dy**2)
+                    if dist==0: dist = 1
+                    self.start_x, self.start_y = self.x, self.y
+
+                    self.end_x = self.x + (dx/dist) * 15.0
+                    self.end_y = self.y + (dy/dist) * 15.0
+                    self.frames_total = max(1, int(15.0/self.current_speed))
+                    self.frames_current = 0
                 return
+
             self.is_hidden = True
-            self.waiting_timer = random.randint(50,400)
-            if "Going To" in self.target_name:
-                self.should_remove = True
+            target_building = next((b for b in self.model.buildings if b.door_node == self.target_node), None)
+            if target_building:
+                self.current_building = target_building
+                if self not in target_building.inventory:
+                    target_building.inventory.append(self)
+                if "Mall" in target_building.name or "T" in target_building.name:
+                    self.waiting_timer = random.randint(500,3000)
+                elif "Facultate" in target_building.name:
+                    self.waiting_timer = random.randint(400,2000)
+                else:
+                    self.waiting_timer = random.randint(150,500)
+            else:
+                self.waiting_timer = random.randint(100,300)
+                if "Going To" in self.target_name:
+                    self.should_remove = False
             return
 
         if self.frames_current >= self.frames_total:
-            next_node = self.path[0]
-            try:
-                curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-                if not self.model.G_working.has_edge(curr_node, next_node):
-                    self.recalculate_path()
-                    return
-            except Exception as e:
-                pass
-
             next_node = self.path.pop(0)
 
             if self.dstar:
@@ -190,21 +212,40 @@ class Student(Agent):
         self.y = self.start_y + fraction * (self.end_y - self.start_y)
 
     def become_panicked(self):
-        self.is_panicked = True
+        self.is_aware = True
         self.color = 'red'
-        self.current_speed = self.panic_speed
-        self.recalculate_path()
+        if len(self.path) == 0:
+            self.choose_new_mission()
+        else:
+            self.recalculate_path(retries=1)
 
     def check_survival(self):
         if self.is_dead or not self.model.fire_started:
             return
+
         dist = ((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)**0.5
-
-        sight_range = self.personal_panic_threshold + (self.model.current_fire_radius * 3.0)
-
         if dist<(self.model.current_fire_radius - self.personal_death_threshold):
             self.die()
             return
+
+        panic_radius = self.model.current_fire_radius + self.personal_panic_threshold
+        if dist < panic_radius:
+            self.is_panicked = True
+            self.current_speed = self.panic_speed
+        else:
+            self.is_panicked = False
+            self.current_speed = self.base_speed
+
+        if not self.is_aware:
+            sight_range = self.personal_panic_threshold + self.model.current_fire_radius * 3.0
+            if dist < sight_range:
+                self.become_panicked()
+                return
+            for smoke in self.model.smoke_blobs[::5]:
+                d_smoke = math.sqrt((self.x - smoke['x'])**2 + (self.y - smoke['y'])**2)
+                if d_smoke < 8.0:
+                    self.become_panicked()
+                    return
 
         if not self.is_panicked:
             for smoke in self.model.smoke_blobs[::5]:
@@ -213,19 +254,17 @@ class Student(Agent):
                     self.become_panicked()
                     return
 
-        if dist<sight_range:
-            if not self.is_panicked:
-                self.become_panicked()
-
     def check_surroundings(self):
         if self.is_dead or not self.model.fire_started or self.is_panicked:
             return
         panicked_nearby = 0
-        for agent in self.model.schedule.agents:
-            if isinstance(agent, Student) and agent!=self and agent.is_panicked:
+        for agent in self.model.active_agents_cache:
+            if agent is not self and agent.is_panicked:
                 d = ((self.x - agent.x)**2 + (self.y - agent.y)**2)**0.5
-                if d<12.0:
+                if d<25.0:
                     panicked_nearby += 1
+                    if panicked_nearby >= 2:
+                        break
 
         if panicked_nearby >= 2:
             if random.random() < 0.1:

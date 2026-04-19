@@ -33,6 +33,10 @@ class CampusModel(Model):
         self.smoke_blobs = []
         self.wind_angle = WIND_ANGLE
         self.burned_edges = set()
+        self.alarm_triggered = False
+        self.truck_dispatched = False
+        self.truck_timer = 0
+        self.hero_name = ""
         self.G_working = self.G_all.copy()
         self.active_agents_cache = []
         self.hotspot_names = list(RAW_LOCATIONS.keys())
@@ -169,6 +173,10 @@ class CampusModel(Model):
             self.schedule.remove(agent)
 
         if self.fire_started:
+            if self.alarm_triggered and not self.truck_dispatched:
+                self.truck_timer -= 1
+                if self.truck_timer <= 0:
+                    self.truck_dispatched = True
             growth = random.uniform(FIRE_GROWTH_MIN, FIRE_GROWTH_MAX)
             if self.current_fire_radius > MAX_FIRE_RADIUS_SOFT_CAP:
                 growth = growth * 0.3

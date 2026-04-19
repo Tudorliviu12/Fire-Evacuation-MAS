@@ -6,7 +6,7 @@ import random
 from faker import Faker
 from pathfinder import DStarLite
 from building import Building
-from config import GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
+from config import TRUCK_DELAY_MAX, TRUCK_DELAY_MIN, GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from simulation_model import CampusModel
@@ -29,13 +29,12 @@ class Student(Agent):
         self.building_idx = building_idx
         self.personal_panic_threshold = random.uniform(PANIC_THRESHOLD_MIN, PANIC_THRESHOLD_MAX)
         self.personal_death_threshold = random.uniform(DEATH_THRESHOLD_MIN, DEATH_THRESHOLD_MAX)
-
         self.target_name = ""
         self.target_node = None
         self.path = []
         self.is_hidden = False
         self.waiting_timer = 0
-
+        self.reaction_time_ticks = 0
         if indoors and building_idx is not None and building_idx < 22:
             self.is_resident = True
             self.home_dorm_idx = building_idx
@@ -133,6 +132,10 @@ class Student(Agent):
 
 
     def move(self):
+        if getattr(self, 'reaction_time_ticks', 0) > 0:
+            self.reaction_time_ticks -= 1
+            return
+
         if self.is_hidden:
             self.waiting_timer -= 1
             if self.waiting_timer <= 0:
@@ -214,6 +217,14 @@ class Student(Agent):
     def become_panicked(self):
         self.is_aware = True
         self.color = 'red'
+
+        if self.model.fire_started and not getattr(self.model, 'alarm_triggered', False):
+            if random.random() < 0.4:
+                self.model.alarm_triggered = True
+                self.model.hero_name = self.full_name
+                self.model.truck_timer = random.randint(TRUCK_DELAY_MIN,TRUCK_DELAY_MAX)
+                self.reaction_time_ticks = 50
+
         if len(self.path) == 0:
             self.choose_new_mission()
         else:

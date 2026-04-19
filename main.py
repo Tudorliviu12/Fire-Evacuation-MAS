@@ -25,12 +25,23 @@ if __name__ == '__main__':
     ax_menu.set_axis_off()
     menu_text = ax_menu.text(0.05, 0.95, "", transform=ax_menu.transAxes, verticalalignment='top', fontsize=10, bbox=dict(boxstyle='round', facecolor='#f8f9fa', edgecolor='gray', alpha=0.8))
 
+    alert_panel = ax_menu.text(0.05, 0.98, "", transform=ax_menu.transAxes, verticalalignment='top', fontsize=12, fontweight='bold', bbox=dict(boxstyle='round, pad=0.5', facecolor='#ff4d4d', edgecolor='black', alpha=0.9))
+    alert_panel.set_visible(False)
+
+    fire_panel = ax_menu.text(0.05, 0.80, "", transform=ax_menu.transAxes, verticalalignment="top", fontsize=10, bbox=dict(boxstyle='round', facecolor='#ffcccc', edgecolor='red', alpha=0.9))
+    fire_panel.set_visible(False)
+
     if not buildings.empty:
         dorms = buildings[buildings['is_dorm'] == True]
         dorms.plot(ax=ax, color='#a67c52', edgecolor='black', alpha=0.7, label='Dorms')
 
     edges.plot(ax=ax, color='#bdc3c7', linewidth=0.5, alpha=0.5, zorder=1)
-    ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=0)
+
+    try:
+        ctx.add_basemap(ax, source=ctx.providers.OpenStreetMap.Mapnik, zorder=0)
+    except Exception as e:
+        print("No internet connection for downloading the map")
+        ax.set_facecolor('#e8e5e1')
 
     scat = ax.scatter([], [], c='blue', s=20, zorder=10, label='Students', picker=5)
 
@@ -146,26 +157,45 @@ if __name__ == '__main__':
                 high_scat.set_offsets(np.empty((0, 2)))
                 info_panel.set_text("")
 
-        burning_buildings = [b for b in model.buildings if b.is_on_fire]
-        if burning_buildings:
-            b = burning_buildings[0]
-            txt = f"Fire at {b.name}\n People stuck inside: {len(b.inventory)}\n"
-            names = [a.full_name for a in b.inventory[:20]]
-            txt += "\n".join(names) + "\n"
-            if len(b.inventory) > 20:
-                txt += f"\n...and other {len(b.inventory) - 15} people stuck inside\n"
-            menu_text.set_text(txt)
-            menu_text.set_bbox(dict(boxstyle='round', facecolor='#ffcccc', edgecolor='red', alpha=0.9))
-        else:
-            sorted_buildings = sorted(model.buildings, key=lambda x:len(x.inventory), reverse=True)
-            txt = "Campus Status:\n"
-            for b in sorted_buildings[:12]:
-                if len(b.inventory) > 0:
-                    txt += f"- {b.name}: {len(b.inventory)} people\n"
-            menu_text.set_text(txt)
-            menu_text.set_bbox(dict(boxstyle='round', facecolor='#e6f2ff', edgecolor='red', alpha=0.9))
+        sorted_buildings = sorted(model.buildings, key=lambda x:len(x.inventory), reverse=True)
+        status_txt = "Campus Status:\n"
+        for b in sorted_buildings[:12]:
+            if len(b.inventory) > 0:
+                status_txt += f"- {b.name}: {len(b.inventory)} people\n"
+        menu_text.set_text(status_txt)
+        menu_text.set_bbox(dict(boxstyle='round', facecolor='#e6f2ff', edgecolor='gray', alpha=0.9))
 
-        return scat, fire_glow, fire_core, smoke_scatter, high_scat
+        burning_buildings = [b for b in model.buildings if b.is_on_fire]
+        has_fire = len(burning_buildings) > 0
+        if has_fire:
+            b = burning_buildings[0]
+            fire_txt = f"Fire at {b.name}\n People stuck inside: {len(b.inventory)}\n"
+            names = [a.full_name for a in b.inventory[:10]]
+            fire_txt += "\n".join(names) + "\n"
+            if len(b.inventory) > 10:
+                fire_txt += f"\n...and other {len(b.inventory) - 10} people stuck inside\n"
+            fire_panel.set_text(fire_txt)
+            fire_panel.set_visible(True)
+        else:
+            fire_panel.set_visible(False)
+        has_alert = getattr(model, 'alarm_triggered', False) and not getattr(model, 'truck_dispatched', False)
+        if has_alert:
+            alert_msg = f"112 Emergency!\nReported by: {model.hero_name}\nISU arriving in {model.truck_timer} frames\n"
+            alert_panel.set_text(alert_msg)
+            alert_panel.set_visible(True)
+        else:
+            alert_panel.set_visible(False)
+
+        current_y = 0.98
+        if has_alert:
+            alert_panel.set_position((0.05, current_y))
+            current_y -= 0.15
+        if has_fire:
+            fire_panel.set_position((0.05, current_y))
+            current_y -= 0.35
+        menu_text.set_position((0.05, current_y))
+
+        return scat, fire_glow, fire_core, smoke_scatter, high_scat, alert_panel, fire_panel, menu_text
 
     fig.canvas.mpl_connect('button_press_event', on_click)
     fig.canvas.mpl_connect('key_press_event', on_key)

@@ -4,6 +4,7 @@ from mesa import Model
 import osmnx as ox
 from shapely import LineString
 from agent_student import Student
+from agent_firetruck import Firetruck
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point
@@ -177,6 +178,13 @@ class CampusModel(Model):
                 self.truck_timer -= 1
                 if self.truck_timer <= 0:
                     self.truck_dispatched = True
+                    entry_node = self.safe_nodes[0]
+                    entry_x = self.nodes_proj.loc[entry_node].geometry.x
+                    entry_y = self.nodes_proj.loc[entry_node].geometry.y
+                    auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
+                    truck = Firetruck("TRUCK_1", self, auto_entry)
+                    self.schedule.add(truck)
+
             growth = random.uniform(FIRE_GROWTH_MIN, FIRE_GROWTH_MAX)
             if self.current_fire_radius > MAX_FIRE_RADIUS_SOFT_CAP:
                 growth = growth * 0.3

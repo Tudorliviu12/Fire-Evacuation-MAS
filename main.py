@@ -51,6 +51,7 @@ if __name__ == '__main__':
 
     selected_agent_id = None
     high_scat = ax.scatter([],[],c='lime', s=80, edgecolors='white', linewidth=2, zorder=11)
+    truck_scat = ax.scatter([], [], c='yellow', s=150, marker='s', edgecolors='black', linewidth=2, zorder=12, label='Firetruck')
     info_panel = ax.text(0.80, 0.95, "", transform=ax.transAxes,
                          verticalalignment='top', horizontalalignment='center',
                          fontsize=10, fontweight='bold', multialignment='center',
@@ -103,7 +104,7 @@ if __name__ == '__main__':
     def on_pick(event):
         global selected_agent_id
         index = event.ind[0]
-        all_agents = [a for a in model.schedule.agents if a.is_active and not getattr(a, 'is_hidden', False)]
+        all_agents = [a for a in model.schedule.agents if type(a).__name__ == 'Student' and getattr(a, 'is_active', False) and not getattr(a, 'is_hidden', False)]
 
         if index<len(all_agents):
             agent = all_agents[index]
@@ -114,7 +115,7 @@ if __name__ == '__main__':
 
     def update(frame):
         model.step()
-        agents = [a for a in model.schedule.agents if a.is_active and not getattr(a, 'is_hidden', False)]
+        agents = [a for a in model.schedule.agents if type(a).__name__ == 'Student' and getattr(a, 'is_active', False) and not getattr(a, 'is_hidden', False)]
         if agents:
             offsets = [(a.x, a.y) for a in agents]
             colors = [a.color for a in agents]
@@ -186,6 +187,14 @@ if __name__ == '__main__':
         else:
             alert_panel.set_visible(False)
 
+        trucks = [a for a in model.schedule.agents if type(a).__name__ == 'Firetruck']
+        if trucks:
+            tx = [t.x for t in trucks]
+            ty = [t.y for t in trucks]
+            truck_scat.set_offsets(np.c_[tx, ty])
+        else:
+            truck_scat.set_offsets(np.empty((0, 2)))
+
         current_y = 0.98
         if has_alert:
             alert_panel.set_position((0.05, current_y))
@@ -195,7 +204,7 @@ if __name__ == '__main__':
             current_y -= 0.35
         menu_text.set_position((0.05, current_y))
 
-        return scat, fire_glow, fire_core, smoke_scatter, high_scat, alert_panel, fire_panel, menu_text
+        return scat, fire_glow, fire_core, smoke_scatter, high_scat, alert_panel, fire_panel, menu_text, truck_scat
 
     fig.canvas.mpl_connect('button_press_event', on_click)
     fig.canvas.mpl_connect('key_press_event', on_key)

@@ -25,12 +25,50 @@ class Firetruck(Agent):
     def calculate_route_to_fire(self):
         start_n = ox.distance.nearest_nodes(self.model.G_drive, self.x, self.y)
         target_n = ox.distance.nearest_nodes(self.model.G_drive, self.model.fire_center_x, self.model.fire_center_y)
+        graph_to_use = self.model.G_drive
+
         try:
-            full_path = nx.shortest_path(self.model.G_drive, start_n, target_n, weight='length')
-            self.path = full_path[1:] if len(full_path) > 1 else []
+            node_path = nx.shortest_path(self.model.G_drive, start_n, target_n, weight='length')
         except:
-            self.path = []
-            self.has_arrived = True
+            start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+            target_n = ox.distance.nearest_nodes(self.model.G_all, self.model.fire_center_x, self.model.fire_center_y)
+            graph_to_use = self.model.G_all
+            try:
+                node_path = nx.shortest_path(graph_to_use, start_n, target_n, weight='length')
+            except:
+                self.path = []
+                self.has_arrived = True
+                return
+
+        self.path = []
+        for i in range(len(node_path) - 1):
+            u = node_path[i]
+            v = node_path[i + 1]
+            ux = graph_to_use.nodes[u].get('x', 0)
+            uy = graph_to_use.nodes[u].get('y', 0)
+            vx = graph_to_use.nodes[v].get('x', 0)
+            vy = graph_to_use.nodes[v].get('y', 0)
+
+            try:
+                edge_data = graph_to_use.get_edge_data(u, v)
+                if edge_data is None:
+                    self.path.append((vx, vy))
+                    continue
+                key = list(edge_data.keys())[0]
+                data = edge_data[key]
+
+                if 'geometry' in data:
+                    coords = list(data['geometry'].coords)
+                    dist_first = math.sqrt((ux - coords[0][0])**2 + (uy-coords[0][1])**2)
+                    dist_last = math.sqrt((ux - coords[-1][0])**2 + (uy-coords[-1][1])**2)
+                    if dist_last < dist_first:
+                        coords.reverse()
+                    self.path.extend(coords[1:])
+                else:
+                    self.path.append((vx, vy))
+
+            except Exception as e:
+                self.path.append((vx, vy))
 
     def check_traffic(self):
         panicked_in_way = 0
@@ -53,7 +91,7 @@ class Firetruck(Agent):
         self.check_traffic()
 
         dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
-        if dist_to_fire <= self.model.current_fire_radius + 20.0:
+        if dist_to_fire <= self.model.current_fire_radius + 8.0:
             self.has_arrived = True
             self.path = []
             return
@@ -62,10 +100,11 @@ class Firetruck(Agent):
             if not self.path:
                 self.has_arrived = True
                 return
-            next_node = self.path.pop(0)
-            node_data = self.model.nodes_proj.loc[next_node]
+
+            next_point = self.path.pop(0)
             self.start_x, self.start_y = self.x, self.y
-            self.end_x, self.end_y = node_data.geometry.x, node_data.geometry.y
+            self.end_x, self.end_y = next_point[0], next_point[1]
+
             dist = math.sqrt((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)
             self.frames_total = max(1, int(dist/max(0.1, self.current_speed)))
             self.frames_current = 0

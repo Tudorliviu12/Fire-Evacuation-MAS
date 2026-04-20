@@ -234,6 +234,9 @@ class Student(Agent):
         if self.is_dead or not self.model.fire_started:
             return
 
+        if self.is_hidden:
+            return
+
         dist = ((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)**0.5
         if dist<(self.model.current_fire_radius - self.personal_death_threshold):
             self.die()

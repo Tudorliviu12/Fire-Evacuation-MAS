@@ -51,7 +51,7 @@ if __name__ == '__main__':
 
     selected_agent_id = None
     high_scat = ax.scatter([],[],c='lime', s=80, edgecolors='white', linewidth=2, zorder=11)
-    truck_scat = ax.scatter([], [], c='yellow', s=150, marker='s', edgecolors='black', linewidth=2, zorder=12, label='Firetruck')
+    truck_scat = ax.scatter([], [], c='yellow', s=80, marker='s', edgecolors='black', linewidth=2, zorder=12, label='Firetruck')
     info_panel = ax.text(0.80, 0.95, "", transform=ax.transAxes,
                          verticalalignment='top', horizontalalignment='center',
                          fontsize=10, fontweight='bold', multialignment='center',

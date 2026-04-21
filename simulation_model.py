@@ -161,8 +161,9 @@ class CampusModel(Model):
 
     def notify_agents_edge_burned(self, u, v):
         for agent in self.active_agents_cache:
-            if not agent.is_dead and not agent.is_hidden:
-                agent.notify_edge_burned(u, v)
+            if type(agent).__name__ == 'Student':
+                if not getattr(agent, 'is_dead', False) and not getattr(agent, 'is_hidden', False):
+                    agent.notify_edge_burned(u, v)
 
     def step(self):
         to_remove = [a for a in self.schedule.agents if getattr(a, 'should_remove', False)]

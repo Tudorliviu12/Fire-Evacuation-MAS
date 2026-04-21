@@ -91,9 +91,15 @@ class Firetruck(Agent):
         self.check_traffic()
 
         dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
-        if dist_to_fire <= self.model.current_fire_radius + 8.0:
-            self.has_arrived = True
-            self.path = []
+        if dist_to_fire <= self.model.current_fire_radius + 8.0 or (self.frames_current >= self.frames_total and not self.path):
+            if not getattr(self, 'troops_delayed', False):
+                self.troops_delayed = True
+                self.has_arrived = True
+                self.path = []
+                from agent_firefighter import Firefighter
+                for i in range(3):
+                    ff = Firefighter(f"FF_{self.unique_id}_{i}", self.model, self.x, self.y)
+                    self.model.schedule.add(ff)
             return
 
         if self.frames_current >= self.frames_total:

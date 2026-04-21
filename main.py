@@ -52,6 +52,8 @@ if __name__ == '__main__':
     selected_agent_id = None
     high_scat = ax.scatter([],[],c='lime', s=80, edgecolors='white', linewidth=2, zorder=11)
     truck_scat = ax.scatter([], [], c='yellow', s=80, marker='s', edgecolors='black', linewidth=2, zorder=12, label='Firetruck')
+    ff_scat = ax.scatter([], [], c='cyan', s=40, marker='o', edgecolors='black', linewidth=1.5, zorder=13, label='Firefighter')
+
     info_panel = ax.text(0.80, 0.95, "", transform=ax.transAxes,
                          verticalalignment='top', horizontalalignment='center',
                          fontsize=10, fontweight='bold', multialignment='center',
@@ -204,7 +206,15 @@ if __name__ == '__main__':
             current_y -= 0.35
         menu_text.set_position((0.05, current_y))
 
-        return scat, fire_glow, fire_core, smoke_scatter, high_scat, alert_panel, fire_panel, menu_text, truck_scat
+        firefighters = [a for a in model.schedule.agents if type(a).__name__ == 'Firefighter']
+        if firefighters:
+            fx = [f.x for f in firefighters]
+            fy = [f.y for f in firefighters]
+            ff_scat.set_offsets(np.c_[fx, fy])
+        else:
+            ff_scat.set_offsets(np.empty((0, 2)))
+
+        return scat, fire_glow, fire_core, smoke_scatter, high_scat, alert_panel, fire_panel, menu_text, truck_scat, ff_scat
 
     fig.canvas.mpl_connect('button_press_event', on_click)
     fig.canvas.mpl_connect('key_press_event', on_key)

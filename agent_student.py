@@ -32,9 +32,13 @@ class Student(Agent):
         self.target_name = ""
         self.target_node = None
         self.path = []
+        self.edge_waypoints = []
         self.is_hidden = False
         self.waiting_timer = 0
         self.reaction_time_ticks = 0
+        self.is_frozen = False
+        self.frozen_timer = 0
+        self.is_calling_112 = False
         if indoors and building_idx is not None and building_idx < 22:
             self.is_resident = True
             self.home_dorm_idx = building_idx
@@ -72,6 +76,13 @@ class Student(Agent):
 
     def recalculate_path(self, retries=1):
         try:
+            if getattr(self.model, 'fire_started', False) and self.target_node is not None:
+                n_data = self.model.nodes_proj[self.target_node]
+                d_target = math.sqrt((n_data.geometry.x - self.model.fire_center_x)**2 + (n_data.geometry.y - self.model.fire_center_y)**2)
+                if d_target <= self.model.current_fire_radius + 15.0:
+                    self.pick_safe_destination()
+                    return
+
             curr_node = ox.distance.nearest_nodes(self.model.G_working, self.x, self.y)
             if not self.model.G_working.has_node(curr_node) or not self.model.G_working.has_node(self.target_node):
                 raise nx.NodeNotFound("Node not found")
@@ -84,30 +95,52 @@ class Student(Agent):
             self.frames_current = self.frames_total
 
         except Exception:
-            if retries>0:
-                available = [
-                    i for i, name in enumerate(self.model.hotspot_names)
-                    if self.model.hotspot_nodes[i] != self.target_node
-                ]
-                if available:
-                    choice_idx = random.choices(available, weights=[self.model.hotspot_weights[i] for i in available], k=1)[0]
-                    self.target_name = self.model.hotspot_names[choice_idx]
-                    self.target_node = self.model.hotspot_nodes[choice_idx]
-                    self.recalculate_path(retries=retries-1)
-                else:
-                    self.path = []
-                    self.dstar = None
-            else:
-                self.path = []
-                self.dstar = None
+            try:
+                curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                if self.model.G_all.has_node(curr_node) and self.model.G_all.has_node(self.target_node):
+                    full_path = nx.shortest_path(self.model.G_all, curr_node, self.target_node, weight='length')
+                    if full_path:
+                        self.path = full_path[1:] if len(full_path) > 1 else []
+                        self.edge_waypoints = []
+                        self.frames_current = self.frames_total
+                        return
+            except Exception:
+                pass
+            self.path = []
+            self.edge_waypoints = []
+
+    def pick_safe_destination(self):
+        safe_options = []
+        safe_weights = []
+        for i, node in enumerate(self.model.hotspot_nodes):
+            node_data = self.model.nodes_proj.loc[node]
+            nx_coord, ny_coord = node_data.geometry.x, node_data.geometry.y
+            d_fire = math.sqrt((nx_coord - self.model.fire_center_x)**2 + (ny_coord - self.model.fire_center_y)**2)
+            if d_fire > self.model.current_fire_radius + 40.0:
+                safe_options.append(i)
+                safe_weights.append(self.model.hotspot_weights[i])
+
+        if safe_options:
+            choice_idx = random.choices(safe_options, weights=safe_weights, k=1)[0]
+            self.target_name = self.model.hotspot_names[choice_idx]
+            self.target_node = self.model.hotspot_nodes[choice_idx]
+        else:
+            self.target_name = "Evacuation Point"
+            self.target_node = self.model.hotspot_nodes[0]
+
+        self.edge_waypoints = []
+        self.recalculate_path(retries=0)
 
     def notify_edge_burned(self, u, v):
         if self.dstar is None or self.is_dead or not self.is_active or not self.path:
             return
 
         path_affected = False
-        for i in range(len(self.path) - 1):
-            if (self.path[i] == u and self.path[i + 1] == v) or (self.path[i] == v and self.path[i + 1] == u):
+        curr_node = ox.distance.nearest_nodes(self.model.G_working, self.x, self.y)
+        full_check_path = [curr_node] + self.path
+
+        for i in range(len(full_check_path) - 1):
+            if (full_check_path[i] == u and full_check_path[i + 1] == v) or (full_check_path[i] == v and full_check_path[i + 1] == u):
                 path_affected = True
                 break
 
@@ -132,6 +165,16 @@ class Student(Agent):
 
 
     def move(self):
+        if self.is_frozen:
+            if self.frozen_timer > 0:
+                self.frozen_timer -= 1
+                return
+            else:
+                self.is_frozen = False
+                self.is_calling_112 = False
+                self.choose_new_mission()
+                return
+
         if getattr(self, 'reaction_time_ticks', 0) > 0:
             self.reaction_time_ticks -= 1
             return
@@ -142,7 +185,7 @@ class Student(Agent):
                 building_agent = self.current_building
                 if building_agent:
                     if "Mall" in building_agent.name or "T" in building_agent.name: threshold = 40
-                    elif "Facultate" in building_agent.name or "Cantina in ": threshold = 30
+                    elif "Facultate" in building_agent.name or "Cantina in " in building_agent.name: threshold = 30
                     else: threshold = 3
                     if len(building_agent.inventory) > threshold or self.is_aware:
                         building_agent.inventory.remove(self)
@@ -160,18 +203,7 @@ class Student(Agent):
 
         if not self.path and self.frames_current >= self.frames_total:
             if self.is_aware:
-                self.recalculate_path(retries=1)
-                if not self.path:
-                    dx = self.x - self.model.fire_center_x
-                    dy = self.y - self.model.fire_center_y
-                    dist = math.sqrt(dx**2 + dy**2)
-                    if dist==0: dist = 1
-                    self.start_x, self.start_y = self.x, self.y
-
-                    self.end_x = self.x + (dx/dist) * 15.0
-                    self.end_y = self.y + (dy/dist) * 15.0
-                    self.frames_total = max(1, int(15.0/self.current_speed))
-                    self.frames_current = 0
+                self.choose_new_mission()
                 return
 
             self.is_hidden = True
@@ -189,28 +221,68 @@ class Student(Agent):
             else:
                 self.waiting_timer = random.randint(100,300)
                 if "Going To" in self.target_name:
-                    self.should_remove = False
+                    self.should_remove = True
             return
 
         if self.frames_current >= self.frames_total:
-            next_node = self.path.pop(0)
+            if hasattr(self, 'edge_waypoints') and self.edge_waypoints:
+                next_pt = self.edge_waypoints.pop(0)
+                self.start_x, self.start_y = self.x, self.y
+                self.end_x, self.end_y = next_pt
+                dist = ((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)**0.5
+                self.frames_total = max(1, int(dist / self.current_speed))
+                self.frames_current = 0
+            elif self.path:
+                next_node = self.path.pop(0)
+                if self.dstar:
+                    if next_node != self.dstar.start:
+                        self.dstar.k_m += self.dstar.heuristic(self.dstar.start, next_node)
+                        self.dstar.start = next_node
+                curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                self.edge_waypoints = []
+                try:
+                    edge_data = self.model.G_all.get_edge_data(curr_node, next_node)
+                    if edge_data is None:
+                        edge_data = self.model.G_all.get_edge_data(next_node, curr_node)
+                    if edge_data is not None:
+                        key = list(edge_data.keys())[0]
+                        data = edge_data[key]
+                        if 'geometry' in data:
+                            coords = list(data['geometry'].coords)
+                            dist_first = math.sqrt((self.x - coords[0][0])**2 + (self.y - coords[0][1])**2)
+                            dist_last = math.sqrt((self.x - coords[-1][0])**2 + (self.y - coords[-1][1])**2)
+                            if dist_last < dist_first:
+                                coords.reverse()
+                            self.edge_waypoints = coords[1:]
+                except Exception:
+                    pass
 
-            if self.dstar:
-                if next_node != self.dstar.start:
-                    self.dstar.k_m += self.dstar.heuristic(self.dstar.start, next_node)
-                    self.dstar.start = next_node
+                if not self.edge_waypoints:
+                    node_data = self.model.nodes_proj.loc[next_node]
+                    self.start_x, self.start_y = self.x, self.y
+                    self.end_x, self.end_y = node_data.geometry.x, node_data.geometry.y
+                else:
+                    next_pt = self.edge_waypoints.pop(0)
+                    self.start_x, self.start_y = self.x, self.y
+                    self.end_x, self.end_y = next_pt
 
-            node_data = self.model.nodes_proj.loc[next_node]
-            self.start_x, self.start_y = self.x, self.y
-            self.end_x, self.end_y = node_data.geometry.x, node_data.geometry.y
-
-            dist = ((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)**0.5
-            self.frames_total = max(1, int(dist/self.current_speed))
-            self.frames_current = 0
+                dist = ((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)**0.5
+                self.frames_total = max(1, int(dist / self.current_speed))
+                self.frames_current = 0
 
         self.frames_current += 1
-
         fraction = self.frames_current / self.frames_total
+
+        if self.model.fire_started and (self.is_panicked or self.is_aware):
+            next_x = self.start_x + fraction * (self.end_x - self.start_x)
+            next_y = self.start_y + fraction * (self.end_y - self.start_y)
+            next_dist = math.sqrt((next_x - self.model.fire_center_x)**2 + (next_y - self.model.fire_center_y)**2)
+            if next_dist <= self.model.current_fire_radius + 2.5:
+                self.path = []
+                self.frames_current = self.frames_total
+                self.recalculate_path(retries=1)
+                return
+
         self.x = self.start_x + fraction * (self.end_x - self.start_x)
         self.y = self.start_y + fraction * (self.end_y - self.start_y)
 
@@ -224,11 +296,15 @@ class Student(Agent):
                 self.model.hero_name = self.full_name
                 self.model.truck_timer = random.randint(TRUCK_DELAY_MIN,TRUCK_DELAY_MAX)
                 self.reaction_time_ticks = 50
+                self.is_calling_112 = True
+                self.is_frozen = True
+                self.frozen_timer = 70
 
-        if len(self.path) == 0:
-            self.choose_new_mission()
-        else:
-            self.recalculate_path(retries=1)
+        if not self.is_frozen:
+            if len(self.path) == 0:
+                self.choose_new_mission()
+            else:
+                self.recalculate_path(retries=1)
 
     def check_survival(self):
         if self.is_dead or not self.model.fire_started:
@@ -285,6 +361,9 @@ class Student(Agent):
                 self.become_panicked()
 
     def plan_next_move(self):
+        if self.is_dead: return
+        if self.is_frozen: return
+
         if len(self.path) == 0:
             current_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
             neighbors = list(self.model.G_all.neighbors(current_node))
@@ -301,6 +380,15 @@ class Student(Agent):
                 self.path = [next_node]
 
     def choose_new_mission(self):
+        if self.is_aware and getattr(self.model, 'fire_started', False):
+            if self.target_node is not None:
+                nd = self.model.nodes_proj.loc[self.target_node]
+                d_fire = math.sqrt((nd.geometry.x - self.model.fire_center_x)**2 + (nd.geometry.y - self.model.fire_center_y)**2)
+                if d_fire > self.model.current_fire_radius + 15.0:
+                    self.recalculate_path()
+                    return
+            self.pick_safe_destination()
+            return
         if random.random() < GO_TO_DESTINATION_PROB:
             choice_idx = random.choices(
                 range(len(self.model.hotspot_names)),

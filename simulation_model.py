@@ -11,8 +11,9 @@ from shapely.geometry import Point
 import random
 import math
 from building import Building
-from config import RAW_LOCATIONS, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, \
-    SMOKE_GROWTH, SMOKE_LIFESPAN
+from config import RAW_LOCATIONS, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, \
+    SMOKE_SPEED, \
+    SMOKE_GROWTH, SMOKE_LIFESPAN, WATER_EXTINGUISH_POWER
 
 
 class CampusModel(Model):
@@ -215,7 +216,7 @@ class CampusModel(Model):
                 })
             for i in range(len(self.smoke_blobs) -1, -1, -1):
                 smoke = self.smoke_blobs[i]
-                growth_factor = SMOKE_GROWTH * (self.current_fire_radius / 15.0)
+                growth_factor = min(SMOKE_GROWTH * (self.current_fire_radius / 15.0), SMOKE_GROWTH*3)
                 smoke['size'] += max(0.1, growth_factor)
                 rad_b = math.radians(smoke['angle'])
                 smoke['x'] += math.cos(rad_b) * SMOKE_SPEED
@@ -223,6 +224,23 @@ class CampusModel(Model):
                 smoke['age'] += 1
                 if smoke['age'] > SMOKE_LIFESPAN:
                     self.smoke_blobs.pop(i)
+
+            if hasattr(self, 'water_particles'):
+                for i in range(len(self.water_particles) -1, -1, -1):
+                    p = self.water_particles[i]
+                    p['x'] += p['vx']
+                    p['y'] += p['vy']
+                    p['life'] -= 1
+
+                    dist_to_fire = math.sqrt(
+                        (p['x'] - self.fire_center_x)**2 + (p['y'] - self.fire_center_y)**2)
+                    hit = dist_to_fire <= self.current_fire_radius + 1.5
+                    dead = p['life'] <= 0
+                    if hit or dead:
+                        if hit and self.current_fire_radius > 0.5:
+                            self.current_fire_radius -= WATER_EXTINGUISH_POWER
+                            self.current_fire_radius = max(0.5, self.current_fire_radius)
+                        self.water_particles.pop(i)
 
         self.block_fire_edges()
         if self.fire_started and self.schedule.steps % 3 == 0:

@@ -2,6 +2,7 @@ from mesa import Agent
 import networkx as nx
 import osmnx as ox
 import math
+import random
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from simulation_model import CampusModel
@@ -14,7 +15,7 @@ class Firetruck(Agent):
         self.x, self.y = node_data.geometry.x, node_data.geometry.y
         self.start_x, self.start_y = self.x, self.y
         self.end_x, self.end_y = self.x, self.y
-        self.base_speed = 3.5
+        self.base_speed = 1.8
         self.current_speed = self.base_speed
         self.path = []
         self.frames_current = 0
@@ -97,8 +98,15 @@ class Firetruck(Agent):
                 self.has_arrived = True
                 self.path = []
                 from agent_firefighter import Firefighter
-                for i in range(3):
-                    ff = Firefighter(f"FF_{self.unique_id}_{i}", self.model, self.x, self.y)
+                num_firefighters = random.randint(3,4)
+                base_angle = math.atan2(self.y - self.model.fire_center_y, self.x - self.model.fire_center_x)
+                arc_spread = 1.0
+                start_angle = base_angle - (arc_spread / 2)
+                step_angle = arc_spread / max(1, (num_firefighters - 1))
+
+                for i in range(num_firefighters):
+                    angle = start_angle + i * step_angle
+                    ff = Firefighter(f"FF_{self.unique_id}_{i}", self.model, self.x, self.y, angle_offset=angle)
                     self.model.schedule.add(ff)
             return
 

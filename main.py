@@ -1,10 +1,12 @@
+from cProfile import label
+
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import random
 import numpy as np
 import contextily as ctx
-from IPython.core.pylabtools import figsize
-
+from matplotlib.patches import Patch, FancyBboxPatch
+from matplotlib.lines import Line2D
 from map_loader import *
 from simulation_model import CampusModel
 from config import TARGET_POPULATION_MIN, TARGET_POPULATION_MAX, SMOKE_LIFESPAN
@@ -118,7 +120,15 @@ if __name__ == '__main__':
 
     def update(frame):
         model.step()
-        agents = [a for a in model.schedule.agents if type(a).__name__ == 'Student' and getattr(a, 'is_active', False) and not getattr(a, 'is_hidden', False)]
+        agents, trucks, firefighters = [], [], []
+        for a in model.schedule.agents:
+            t = type(a).__name__
+            if t == 'Student' and getattr(a, 'is_active', False) and not getattr(a, 'is_hidden', False):
+                agents.append(a)
+            elif t == 'Firetruck':
+                trucks.append(a)
+            elif t == 'Firefighter':
+                firefighters.append(a)
         if agents:
             offsets = [(a.x, a.y) for a in agents]
             colors = [a.color for a in agents]
@@ -190,7 +200,6 @@ if __name__ == '__main__':
         else:
             alert_panel.set_visible(False)
 
-        trucks = [a for a in model.schedule.agents if type(a).__name__ == 'Firetruck']
         if trucks:
             tx = [t.x for t in trucks]
             ty = [t.y for t in trucks]
@@ -207,7 +216,6 @@ if __name__ == '__main__':
             current_y -= 0.35
         menu_text.set_position((0.05, current_y))
 
-        firefighters = [a for a in model.schedule.agents if type(a).__name__ == 'Firefighter']
         if firefighters:
             fx = [f.x for f in firefighters]
             fy = [f.y for f in firefighters]
@@ -238,6 +246,33 @@ if __name__ == '__main__':
 
     ax.set_axis_off()
     title_text = ax.set_title("Tudor Vladimirescu - Simulation\nRunning - Fire Mode Off", fontsize=13, fontweight='bold', pad=10)
+
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=7, label='Citizen (unaware)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=7, label='Citizen (aware/panicked)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='black', markersize=7, label='Citizen (dead)'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='yellow', markersize=8, label='Firetruck', markeredgecolor='black', markeredgewidth=1.0),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='brown', markersize=7, label='Firefighter', markeredgecolor='black', markeredgewidth=0.8),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=8, label='Fire', markeredgecolor='none'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='cyan', markersize=6, label='Water', markeredgecolor='black', markeredgewidth=0.5),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=8, label='Smoke', markeredgecolor='none', alpha=0.5),
+    ]
+
+    legend = ax.legend(
+        handles=legend_elements,
+        loc='lower left',
+        fontsize=7.5,
+        framealpha=0.7,
+        facecolor='white',
+        edgecolor='gray',
+        borderpad=0.7,
+        labelspacing=0.4,
+        handletextpad=0.5,
+        title='Legend',
+        title_fontsize=8,
+    )
+    legend.set_zorder(1000)
+
 
     ani = animation.FuncAnimation(fig, update, frames=500, interval=50, blit=False)
 

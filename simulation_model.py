@@ -33,6 +33,7 @@ class CampusModel(Model):
         self.fire_blobs = []
         self.safe_nodes = []
         self.smoke_blobs = []
+        self.water_particles = []
         self.wind_angle = WIND_ANGLE
         self.burned_edges = set()
         self.alarm_triggered = False
@@ -116,9 +117,22 @@ class CampusModel(Model):
             return
 
         fire_pt = Point(self.fire_center_x, self.fire_center_y)
+        check_radius = self.current_fire_radius + 10.0
 
         for u,v,k,data in self.G_all.edges(keys=True, data=True):
             if(u,v,k) in self.burned_edges:
+                continue
+
+            nx_u = self.G_all.nodes[u]['x']
+            ny_u = self.G_all.nodes[u]['y']
+            nx_v = self.G_all.nodes[v]['x']
+            ny_v = self.G_all.nodes[v]['y']
+            mid_x = (nx_u + nx_v) / 2
+            mid_y = (ny_u + ny_v) / 2
+            dx = mid_x - self.fire_center_x
+            dy = mid_y - self.fire_center_y
+
+            if dx*dx + dy*dy > (check_radius*check_radius):
                 continue
 
             if 'geometry' in data:
@@ -135,20 +149,6 @@ class CampusModel(Model):
                     if self.G_working.has_edge(u,v,key=k):
                         self.G_working.remove_edge(u,v,key=k)
                         self.notify_agents_edge_burned(u,v)
-
-            nx_u = self.G_all.nodes[u]['x']
-            ny_u = self.G_all.nodes[u]['y']
-            nx_v = self.G_all.nodes[v]['x']
-            ny_v = self.G_all.nodes[v]['y']
-            mid_x = (nx_u + nx_v) / 2
-            mid_y = (ny_u + ny_v) / 2
-            dist = math.sqrt((mid_x - self.fire_center_x)**2 + (mid_y - self.fire_center_y)**2)
-            if dist < self.current_fire_radius:
-                if (u,v,k) not in self.burned_edges:
-                    self.burned_edges.add((u, v, k))
-                    if self.G_working.has_edge(u,v,k):
-                        self.G_working.remove_edge(u, v, key=k)
-                        self.notify_agents_edge_burned(u, v)
 
     def check_buildings_fire(self):
         if not self.fire_started:

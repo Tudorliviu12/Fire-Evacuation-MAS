@@ -75,9 +75,12 @@ class Firetruck(Agent):
         panicked_in_way = 0
         for agent in self.model.active_agents_cache:
             if not getattr(agent, 'is_hidden', False) and getattr(agent, 'is_panicked', False):
-                dist = math.sqrt((self.x - agent.x)**2 + (self.y - agent.y)**2)
-                if dist<20.0:
+                dx = self.x - agent.x
+                dy = self.y - agent.y
+                if dx*dx + dy*dy < 400.0:
                     panicked_in_way += 1
+                    if panicked_in_way > 6:
+                        break
         in_smoke = self.model.is_near_any_smoke(self.x, self.y)
         if in_smoke:
             self.current_speed = self.base_speed * 0.5

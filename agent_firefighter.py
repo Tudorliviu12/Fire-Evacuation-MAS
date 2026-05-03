@@ -42,13 +42,11 @@ class Firefighter(Agent):
         self.target_y = self.model.fire_center_y + math.sin(self.angle_offset) * standoff_dist
 
     def is_too_close(self, x, y):
-        for agent in self.model.schedule.agents:
+        for agent in self.model.active_agents_cache:
             if agent is self:
                 continue
-            agent_type = type(agent).__name__
-            if agent_type in ('Firefighter', 'Firetruck'):
-                d = math.sqrt((x-agent.x)**2 + (y-agent.y)**2)
-                if d <= MIN_FIREFIGHTER_DIST:
+            if type(agent).__name__ in ('Firefighter', 'Firetruck'):
+                if (x-agent.x)**2 + (y-agent.y)**2 <= MIN_FIREFIGHTER_DIST**2:
                     return True
         return False
 
@@ -74,9 +72,6 @@ class Firefighter(Agent):
         self.y = next_y
 
     def shoot_water(self):
-        if not hasattr(self.model, 'water_particles'):
-            self.model.water_particles = []
-
         if self.burst_paused > 0:
             self.burst_paused -= 1
             return

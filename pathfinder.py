@@ -29,6 +29,7 @@ class DStarLite:
     def edge_cost(self, u, v):
         if not self.graph.has_node(u) or not self.graph.has_node(v):
             return self.INF
+
         if self.graph.has_edge(u, v):
             edge_data = self.graph.get_edge_data(u, v)
             if isinstance(edge_data, dict):
@@ -187,6 +188,33 @@ class DStarLite:
     def notify_edge_changed(self, u, v):
         self.update_vertex(u)
         self.update_vertex(v)
+        self.compute_shortest_path()
+
+    def notify_fire_zone(self, fire_cx, fire_cy, danger_radius):
+        affected = []
+        for node in self.graph.nodes():
+            if node == self.start or node==self.goal:
+                continue
+            nx_x = self.graph.nodes[node].get('x', 0)
+            nx_y = self.graph.nodes[node].get('y', 0)
+            d = math.sqrt((nx_x - fire_cx)**2 + (nx_y - fire_cy)**2)
+            if d<danger_radius:
+                affected.append(node)
+        if not affected:
+            return
+
+        for node in affected:
+            self.g[node] = self.INF
+            self.rhs[node] = self.INF
+            self._in_heap.discard(node)
+        neighbors_to_update = set()
+        for node in affected:
+            for neighbor in self.predecessors(node):
+                if neighbor not in affected:
+                    neighbors_to_update.add(neighbor)
+
+        for node in neighbors_to_update:
+            self.update_vertex(node)
         self.compute_shortest_path()
 
     def update_start(self, new_start):

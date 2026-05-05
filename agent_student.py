@@ -41,6 +41,8 @@ class Student(Agent):
         self.is_calling_112 = False
         self.flee_mode = False
         self.needs_reroute_after_flee = False
+        self.flee_cooldown = 0
+        self.visited_flee_targets = set()
 
         if indoors and building_idx is not None and building_idx < 22:
             self.is_resident = True
@@ -192,23 +194,131 @@ class Student(Agent):
                 self.dstar_goal = None
                 self.recalculate_path(retries=1)
 
-    def flee_step(self):
-        dx = self.x - self.model.fire_center_x
-        dy = self.y - self.model.fire_center_y
-        d = math.sqrt(dx*dx + dy*dy)
-        if d<0.1:
-            dx, dy = random.uniform(-1,1), random.uniform(-1,1)
+    def flee_step(self, exclude_target=None):
+        if getattr(self, 'flee_cooldown', 0) > 0:
+            self.flee_cooldown -= 1
+            dx = self.x - self.model.fire_center_x
+            dy = self.y - self.model.fire_center_y
             d = math.sqrt(dx*dx + dy*dy)
-        flee_dist = 40.0
-        self.start_x, self.start_y = self.x, self.y
-        self.end_x = self.x + (dx/d) * flee_dist
-        self.end_y = self.y + (dy/d) * flee_dist
-        self.frames_total = max(1, int(flee_dist/max(0.1, self.current_speed)))
-        self.frames_current = 0
-        self.flee_mode = False
-        self.path = []
+            if d > 0.1:
+                self.x += (dx/d) * 1.5
+                self.y += (dy/d) * 1.5
+                self.start_x, self.start_y = self.x, self.y
+                self.end_x, self.end_y = self.x, self.y
+            return
+
+        self.flee_cooldown = 15
+        self.needs_reroute_after_flee = False
         self.edge_waypoints = []
-        self.needs_reroute_after_flee = True
+        self.path = []
+        try:
+            curr_node = ox.distance.nearest_nodes(self.model.G_working, self.x, self.y)
+            neighbors = list(self.model.G_working.neighbors(curr_node))
+            if not neighbors:
+                curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                neighbors = list(self.model.G_all.neighbors(curr_node))
+            if not neighbors:
+                return
+
+            best_node = max(neighbors, key=lambda n:
+            (self.model.G_all.nodes[n].get('x', 0) - self.model.fire_center_x)**2 + (self.model.G_all.nodes[n].get('y', 0) - self.model.fire_center_y)**2
+            )
+
+            fire_cx = self.model.fire_center_x
+            fire_cy = self.model.fire_center_y
+            fire_r = self.model.current_fire_radius
+            danger_r = fire_r + 15.0
+            candidate_nodes = []
+            for node in self.model.hotspot_nodes:
+                if node == exclude_target: continue
+                if node in self.visited_flee_targets: continue
+                try:
+                    nd = self.model.nodes_proj.loc[node]
+                    d = math.sqrt((nd.geometry.x - fire_cx)**2 + (nd.geometry.y - fire_cy)**2)
+                    if d>danger_r:
+                        candidate_nodes.append((node, d))
+                except Exception:
+                    pass
+            for sn in self.model.safe_nodes:
+                if sn == exclude_target: continue
+                if sn in self.visited_flee_targets: continue
+                try:
+                    nd = self.model.nodes_proj.loc[sn]
+                    d = math.sqrt((nd.geometry.x - fire_cx)**2 + (nd.geometry.y - fire_cy)**2)
+                    if d>danger_r:
+                        candidate_nodes.append((sn, d))
+                except Exception:
+                    pass
+            candidate_nodes.sort(key=lambda x: x[1], reverse=True)
+
+            for target_node, _ in candidate_nodes[:6]:
+                for G in [self.model.G_working, self.model.G_all]:
+                    try:
+                        full_path = nx.shortest_path(G, curr_node, target_node, weight='length')
+                        if not full_path or len(full_path) < 2: continue
+                        path_safe = True
+                        for n in full_path:
+                            nx_ = G.nodes[n].get('x', 0)
+                            ny_ = G.nodes[n].get('y', 0)
+                            if math.sqrt((nx_ - fire_cx)**2 + (ny_ - fire_cy)**2) < fire_r + 6.0:
+                                path_safe = False
+                                break
+                        if path_safe:
+                            self.path = full_path[1:]
+                            self.flee_mode = False
+                            self.visited_flee_target.add(target_node)
+                            if len(self.visited_flee_targets) > 5:
+                                self.visited_flee_targets.pop()
+                            return
+                    except Exception:
+                        pass
+
+            safe_target = None
+            best_dist = 0
+            for sn in self.model.safe_nodes:
+                try:
+                    nd = self.model.nodes_proj.loc[sn]
+                    d =  math.sqrt((nd.geometry.x - self.model.fire_center_x)**2 + (nd.geometry.y - self.model.fire_center_y)**2)
+                    if d > best_dist:
+                        best_dist = d
+                        safe_target = sn
+                except Exception:
+                    pass
+
+            if safe_target is not None:
+                try:
+                    full_path = nx.shortest_path(self.model.G_working, curr_node, safe_target, weight='length')
+                    if full_path and len(full_path) > 1:
+                        self.path = full_path[1:]
+                        self.flee_mode = False
+                        return
+                except Exception:
+                    pass
+
+                try:
+                    full_path = nx.shortest_path(self.model.G_all, curr_node, safe_target, weight='length')
+                    if full_path and len(full_path) > 1:
+                        self.path = full_path[1:]
+                        self.flee_mode = False
+                        return
+                except Exception:
+                    pass
+
+            greedy_path = []
+            current = curr_node
+            for _ in range(5):
+                neighbors_g = list(self.model.G_all.neighbors(current))
+                if not neighbors_g:
+                    break
+                current = max(neighbors_g, key=lambda n:
+                (self.model.G_all.nodes[n].get('x', 0) - self.model.fire_center_x)**2 + (self.model.G_all.nodes[n].get('y', 0) - self.model.fire_center_y)**2)
+                greedy_path.append(current)
+            self.path = greedy_path if greedy_path else [best_node]
+            self.flee_mode = False
+
+        except Exception:
+            pass
+
 
     def move(self):
         if self.is_frozen:
@@ -239,7 +349,10 @@ class Student(Agent):
                         self.is_hidden = False
                         self.x, self.y = building_agent.door_coords
                         self.start_x, self.start_y = self.x, self.y
-                        self.choose_new_mission()
+                        if self.is_aware and self.model.fire_started:
+                            self.flee_step(exclude_target=self.target_node)
+                        else:
+                            self.choose_new_mission()
                     else:
                         self.waiting_timer = random.randint(250,500)
                 else:
@@ -248,29 +361,20 @@ class Student(Agent):
             return
 
         if not self.path and self.frames_current >= self.frames_total:
-            if getattr(self, 'needs_reroute_after_flee', False):
-                self.needs_reroute_after_flee = False
+            if self.is_aware and self.model.fire_started:
                 dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
-                if dist_to_fire < self.model.current_fire_radius + 30.0:
-                    self.flee_mode = True
-                    self.flee_step()
+                if dist_to_fire < self.model.current_fire_radius + 40.0:
+                    self.flee_step(exclude_target=self.target_node)
                     return
                 if self.target_node is not None and self.node_is_safe_dest(self.target_node):
                     self.recalculate_path()
-                else:
-                    self.pick_safe_destination()
-            if self.is_aware:
-                if self.model.fire_started:
-                    dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
-                    if dist_to_fire < self.model.current_fire_radius + 40.0:
-                        self.flee_step()
-                        return
-
-                    if self.target_node is not None and self.node_is_safe_dest(self.target_node):
-                        self.recalculate_path()
-                        return
-                    self.pick_safe_destination()
                     return
+                self.pick_safe_destination()
+                return
+            if not self.is_aware and self.model.fire_started:
+                self.choose_new_mission()
+                return
+            if not self.model.fire_started:
                 self.choose_new_mission()
                 return
 
@@ -345,13 +449,13 @@ class Student(Agent):
             next_x = self.start_x + fraction * (self.end_x - self.start_x)
             next_y = self.start_y + fraction * (self.end_y - self.start_y)
             next_dist = math.sqrt((next_x - self.model.fire_center_x)**2 + (next_y - self.model.fire_center_y)**2)
-            if next_dist <= self.model.current_fire_radius + 2.5:
+            if next_dist <= self.model.current_fire_radius + 8.0:
                 self.path = []
                 self.edge_waypoints = []
                 self.frames_current = self.frames_total
                 self.flee_mode = False
                 self.notify_dstar_fire_zones()
-                self.flee_step()
+                self.flee_step(exclude_target=self.target_node)
                 return
 
         self.x = self.start_x + fraction * (self.end_x - self.start_x)
@@ -403,6 +507,7 @@ class Student(Agent):
                 self.edge_waypoints = []
                 self.path = []
                 self.flee_mode = True
+                self.flee_step(exclude_target=self.target_node)
         else:
             was_panicked = self.is_panicked
             self.is_panicked = False
@@ -412,10 +517,9 @@ class Student(Agent):
                 self.path = []
                 self.recalculate_path()
 
-        if dist < self.model.current_fire_radius + 10.0 and self.is_aware and not self.flee_mode:
+        if dist < self.model.current_fire_radius + 10.0 and self.is_aware and not self.path:
             self.edge_waypoints = []
-            self.path = []
-            self.flee_mode = True
+            self.flee_step(exclude_target=self.target_node)
 
         if not self.is_aware:
             sight_range = self.personal_panic_threshold + self.model.current_fire_radius * 3.0
@@ -476,7 +580,7 @@ class Student(Agent):
         try:
             nd = self.model.nodes_proj.loc[node]
             d_fire = math.sqrt((nd.geometry.x - self.model.fire_center_x)**2 + (nd.geometry.y - self.model.fire_center_y)**2)
-            return d_fire > self.model.current_fire_radius + 15.0
+            return d_fire > self.model.current_fire_radius + 40.0
         except Exception:
             return True
 
@@ -547,15 +651,6 @@ class Student(Agent):
             self.notify_dstar_fire_zones()
 
         if self.flee_mode and not self.is_frozen:
-            self.flee_step()
-            return
-
-        if self.model.fire_started and self.is_panicked and not self.path and not self.flee_mode:
-            dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
-            safe_dist = self.model.current_fire_radius + self.personal_panic_threshold
-            if dist_to_fire > safe_dist * 0.6 and self.target_node is not None and self.node_is_safe_dest(self.target_node):
-                self.recalculate_path()
-            else:
-                self.plan_next_move()
+            self.flee_step(exclude_target=self.target_node)
 
         self.move()

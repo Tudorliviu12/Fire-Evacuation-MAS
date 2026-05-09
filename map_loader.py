@@ -40,7 +40,7 @@ def load_campus_map():
 
         if edge_geom.intersects(all_buildings_shape):
             overleap = edge_geom.intersection(all_buildings_shape)
-            if hasattr(overleap, 'length') and overleap.length > 3.0:
+            if hasattr(overleap, 'length') and overleap.length > 0.5:
                 edges_to_remove.append((u, v, k))
 
     for u,v,k in edges_to_remove:

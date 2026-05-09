@@ -43,6 +43,7 @@ class Student(Agent):
         self.needs_reroute_after_flee = False
         self.flee_cooldown = 0
         self.visited_flee_targets = set()
+        self.call_timer = 0
 
         if indoors and building_idx is not None and building_idx < 22:
             self.is_resident = True
@@ -119,20 +120,22 @@ class Student(Agent):
             full_path = self.dstar.get_path()
 
             if not full_path:
-                try:
-                    curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-                    fallback_path = nx.shortest_path(self.model.G_all, curr_node, self.target_node, weight='length')
-                    if fallback_path and len(fallback_path) > 1:
-                        self.path = fallback_path[1:]
-                        self.flee_mode = False
-                        self.frames_current = self.frames_total
-                        return
-                except Exception:
-                    pass
-
-                if self.is_aware and self.model.fire_started and not self.node_is_safe_dest(self.target_node):
-                    self.pick_safe_destination()
+                if self.model.fire_started:
+                    self.path = []
+                    if self.is_aware:
+                        self.flee_step(exclude_target=None)
                     return
+                else:
+                    try:
+                        curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                        fallback_path = nx.shortest_path(self.model.G_all, curr_node, self.target_node, weight='length')
+                        if fallback_path and len(fallback_path) > 1:
+                            self.path = fallback_path[1:]
+                            self.flee_mode = False
+                            self.frames_current = self.frames_total
+                            return
+                    except Exception:
+                        pass
                 self.path = []
                 return
 
@@ -260,15 +263,15 @@ class Student(Agent):
                         for n in full_path:
                             nx_ = G.nodes[n].get('x', 0)
                             ny_ = G.nodes[n].get('y', 0)
-                            if math.sqrt((nx_ - fire_cx)**2 + (ny_ - fire_cy)**2) < fire_r + 6.0:
+                            if math.sqrt((nx_ - fire_cx)**2 + (ny_ - fire_cy)**2) < fire_r + 2.0:
                                 path_safe = False
                                 break
                         if path_safe:
                             self.path = full_path[1:]
                             self.flee_mode = False
-                            self.visited_flee_target.add(target_node)
+                            self.visited_flee_targets.add(target_node)
                             if len(self.visited_flee_targets) > 5:
-                                self.visited_flee_targets.pop()
+                                self.visited_flee_targets = set(list(self.visited_flee_targets)[-5:])
                             return
                     except Exception:
                         pass
@@ -338,6 +341,9 @@ class Student(Agent):
         if self.is_hidden:
             self.waiting_timer -= 1
             if self.waiting_timer <= 0:
+                if not self.is_aware and random.random() < 0.35:
+                    self.waiting_timer = random.randint(200,700)
+                    return
                 building_agent = self.current_building
                 if building_agent:
                     if "Mall" in building_agent.name or "T" in building_agent.name: threshold = 40
@@ -371,27 +377,28 @@ class Student(Agent):
                     return
                 self.pick_safe_destination()
                 return
-            if not self.is_aware and self.model.fire_started:
-                self.choose_new_mission()
-                return
-            if not self.model.fire_started:
-                self.choose_new_mission()
-                return
+
+            target_building = next((b for b in self.model.buildings if b.door_node == self.target_node), None)
+            if target_building:
+                door_x, door_y = target_building.door_coords
+                dist_to_door = math.sqrt((door_x - self.x)**2 + (door_y - self.y)**2)
+                if dist_to_door > 30.0:
+                    self.recalculate_path()
+                    return
 
             self.is_hidden = True
-            target_building = next((b for b in self.model.buildings if b.door_node == self.target_node), None)
             if target_building:
                 self.current_building = target_building
                 if self not in target_building.inventory:
                     target_building.inventory.append(self)
                 if "Mall" in target_building.name or "T" in target_building.name:
-                    self.waiting_timer = random.randint(500,3000)
+                    self.waiting_timer = random.randint(1500,6000)
                 elif "Facultate" in target_building.name:
-                    self.waiting_timer = random.randint(400,2000)
+                    self.waiting_timer = random.randint(1200,4000)
                 else:
-                    self.waiting_timer = random.randint(150,500)
+                    self.waiting_timer = random.randint(600,2000)
             else:
-                self.waiting_timer = random.randint(100,300)
+                self.waiting_timer = random.randint(400,1000)
                 if "Going To" in self.target_name:
                     self.should_remove = True
             return
@@ -410,7 +417,10 @@ class Student(Agent):
                     if next_node != self.dstar.start:
                         self.dstar.k_m += self.dstar.heuristic(self.dstar.start, next_node)
                         self.dstar.start = next_node
-                curr_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                if self.path:
+                    curr_node = self.path[0] if not self.edge_waypoints else ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                else:
+                    curr_node = next_node
                 self.edge_waypoints = []
                 try:
                     edge_data = self.model.G_all.get_edge_data(curr_node, next_node)
@@ -445,17 +455,32 @@ class Student(Agent):
         self.frames_current += 1
         fraction = self.frames_current / self.frames_total
 
+        if getattr(self, 'is_calling_112', False):
+            if self.call_timer > 0:
+                self.call_timer -= 1
+                fraction = 0.4 * fraction
+            else:
+                self.is_calling_112 = False
+
         if self.model.fire_started and (self.is_panicked or self.is_aware):
             next_x = self.start_x + fraction * (self.end_x - self.start_x)
             next_y = self.start_y + fraction * (self.end_y - self.start_y)
             next_dist = math.sqrt((next_x - self.model.fire_center_x)**2 + (next_y - self.model.fire_center_y)**2)
-            if next_dist <= self.model.current_fire_radius + 8.0:
+            if next_dist <= self.model.current_fire_radius + 3.0:
                 self.path = []
                 self.edge_waypoints = []
                 self.frames_current = self.frames_total
                 self.flee_mode = False
+                dx = self.x - self.model.fire_center_x
+                dy = self.y - self.model.fire_center_y
+                current_dist = math.sqrt(dx*dx + dy*dy)
+                if current_dist > 0.1:
+                    self.x += (dx/current_dist)*2.5
+                    self.y += (dy/current_dist)*2.5
+                    self.start_x, self.start_y = self.x, self.y
+                    self.end_x, self.end_y = self.x, self.y
                 self.notify_dstar_fire_zones()
-                self.flee_step(exclude_target=self.target_node)
+                self.recalculate_path()
                 return
 
         self.x = self.start_x + fraction * (self.end_x - self.start_x)
@@ -470,10 +495,9 @@ class Student(Agent):
                 self.model.alarm_triggered = True
                 self.model.hero_name = self.full_name
                 self.model.truck_timer = random.randint(TRUCK_DELAY_MIN,TRUCK_DELAY_MAX)
-                self.reaction_time_ticks = 50
+                self.reaction_time_ticks = 10
                 self.is_calling_112 = True
-                self.is_frozen = True
-                self.frozen_timer = 70
+                self.call_timer = 70
 
         self.notify_dstar_fire_zones()
 
@@ -633,6 +657,8 @@ class Student(Agent):
 
 
     def step(self):
+        if self.is_dead:
+            return
         if not self.is_active or self.is_dead:
             if not self.is_active:
                 if self.model.schedule.steps >= self.start_delay:
@@ -640,9 +666,6 @@ class Student(Agent):
                 else: return
 
         self.check_survival()
-
-        if self.is_dead:
-            return
 
         if self.model.schedule.steps % 20 == 0:
             self.check_surroundings()

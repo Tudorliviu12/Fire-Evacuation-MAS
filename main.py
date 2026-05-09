@@ -180,16 +180,25 @@ if __name__ == '__main__':
         burning_buildings = [b for b in model.buildings if b.is_on_fire]
         has_fire = len(burning_buildings) > 0
         if has_fire:
-            b = burning_buildings[0]
-            fire_txt = f"Fire at {b.name}\n People stuck inside: {len(b.inventory)}\n"
-            names = [a.full_name for a in b.inventory[:10]]
-            fire_txt += "\n".join(names) + "\n"
-            if len(b.inventory) > 10:
-                fire_txt += f"\n...and other {len(b.inventory) - 10} people stuck inside\n"
+            fire_txt = f"FIRE DETECTED! Radius: {model.current_fire_radius:.1f}m\n\n"
+            for b in burning_buildings[:3]:
+                fire_txt += f"Fire at {b.name}\n ({len(b.inventory)} people inside)\n"
+            if len(burning_buildings) > 3:
+                fire_txt += f"...and other {len(burning_buildings)} burning buildings\n"
+
+            b_main = burning_buildings[0]
+            if len(b_main.inventory) > 0:
+                fire_txt += f"\nPeople stuck inside {b_main.name}:\n"
+                names = [a.full_name for a in b_main.inventory[:6]]
+                fire_txt += "\n".join(names) + "\n"
+                if len(b_main.inventory) > 6:
+                    fire_txt += f"...and other {len(b_main.inventory) - 4}\n"
+
             fire_panel.set_text(fire_txt)
             fire_panel.set_visible(True)
         else:
             fire_panel.set_visible(False)
+
         has_alert = getattr(model, 'alarm_triggered', False) and not getattr(model, 'truck_dispatched', False)
         if has_alert:
             alert_msg = f"112 Emergency!\nReported by: {model.hero_name}\nISU arriving in {model.truck_timer} frames\n"
@@ -272,7 +281,7 @@ if __name__ == '__main__':
     legend.set_zorder(1000)
 
 
-    ani = animation.FuncAnimation(fig, update, frames=500, interval=50, blit=False)
+    ani = animation.FuncAnimation(fig, update, interval=50, blit=False, cache_frame_data=False)
 
     manager = plt.get_current_fig_manager()
     try:

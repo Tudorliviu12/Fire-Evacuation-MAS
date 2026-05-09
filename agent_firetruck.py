@@ -4,6 +4,7 @@ import osmnx as ox
 import math
 import random
 from typing import TYPE_CHECKING
+from agent_firefighter import Firefighter
 if TYPE_CHECKING:
     from simulation_model import CampusModel
 
@@ -13,47 +14,108 @@ class Firetruck(Agent):
         self.model: 'CampusModel' = model
         node_data = self.model.nodes_proj.loc[start_node]
         self.x, self.y = node_data.geometry.x, node_data.geometry.y
+        self.home_x, self.home_y = self.x, self.y
         self.start_x, self.start_y = self.x, self.y
         self.end_x, self.end_y = self.x, self.y
-        self.base_speed = 1.8
+        self.base_speed = 4.0
         self.current_speed = self.base_speed
         self.path = []
+        self.return_path = []
         self.frames_current = 0
         self.frames_total = 1
         self.has_arrived = False
+        self.is_returning = False
+        self.firefighters = []
+        self.boarded_count = 0
+        self.troops_deployed = False
+        self.assigned_angle = self.assign_angle()
+        self.staging_x, self.staging_y = self.fire_stay_position()
         self.calculate_route_to_fire()
 
+    def build_safe_Gdrive(self, base_graph):
+        fire_radius = max(self.model.current_fire_radius + 20.0, 25.0)
+        safe = base_graph.copy()
+        to_remove = [
+            n for n in safe.nodes()
+            if math.sqrt((safe.nodes[n].get('x', 0) - self.model.fire_center_x)**2 + (safe.nodes[n].get('y', 0) - self.model.fire_center_y)**2) < fire_radius
+        ]
+        safe.remove_nodes_from(to_remove)
+        return safe
+
+    def nearest_node_in_graph(self, graph, x, y):
+        best_n, best_d = None, float('inf')
+        for n in graph.nodes():
+            nx_x = graph.nodes[n].get('x', 0)
+            ny_y = graph.nodes[n].get('y', 0)
+            d = (nx_x - x) ** 2 + (ny_y - y) ** 2
+            if d < best_d:
+                best_d = d
+                best_n = n
+        return best_n
+
     def calculate_route_to_fire(self):
+        safe_graph = self.build_safe_Gdrive(self.model.G_drive)
+        if len(safe_graph.nodes) == 0:
+            self.path = []
+            self.has_arrived = True
+            return
+
         start_n = ox.distance.nearest_nodes(self.model.G_drive, self.x, self.y)
-        target_n = ox.distance.nearest_nodes(self.model.G_drive, self.model.fire_center_x, self.model.fire_center_y)
-        graph_to_use = self.model.G_drive
+        if start_n not in safe_graph:
+            start_n = self.nearest_node_in_graph(safe_graph, self.x, self.y)
+        if start_n is None:
+            self.path = []
+            self.has_arrived = True
+            return
+
+        target_n = self.nearest_node_in_graph(safe_graph, self.staging_x, self.staging_y)
+        if target_n is None:
+            self.path = []
+            self.has_arrived = True
+            return
+
+        self.staging_x = safe_graph.nodes[target_n].get('x', self.staging_x)
+        self.staging_y = safe_graph.nodes[target_n].get('y', self.staging_y)
 
         try:
-            node_path = nx.shortest_path(self.model.G_drive, start_n, target_n, weight='length')
-        except:
-            start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-            target_n = ox.distance.nearest_nodes(self.model.G_all, self.model.fire_center_x, self.model.fire_center_y)
-            graph_to_use = self.model.G_all
-            try:
-                node_path = nx.shortest_path(graph_to_use, start_n, target_n, weight='length')
-            except:
-                self.path = []
-                self.has_arrived = True
-                return
+            node_path = nx.shortest_path(safe_graph, start_n, target_n, weight='length')
+            self.path = self.build_waypoint(safe_graph, node_path)
+            return
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            pass
 
+        try:
+            safe_all = self.build_safe_Gdrive(self.model.G_all)
+            start_all = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+            if start_all not in safe_all:
+                start_all = self.nearest_node_in_graph(safe_all, self.x, self.y)
+            target_all = self.nearest_node_in_graph(safe_all, self.staging_x, self.staging_y)
+
+            if start_all and target_all and nx.has_path(safe_all, start_all, target_all):
+                node_path = nx.shortest_path(safe_all, start_all, target_all, weight='length')
+                self.path = self.build_waypoint(safe_all, node_path)
+                self.staging_x = safe_all.nodes[target_all].get('x', self.staging_x)
+                self.staging_y = safe_all.nodes[target_all].get('y', self.staging_y)
+                return
+        except Exception:
+            pass
         self.path = []
+        self.has_arrived = True
+
+    def build_waypoint(self, graph, node_path):
+        waypoints = []
         for i in range(len(node_path) - 1):
             u = node_path[i]
             v = node_path[i + 1]
-            ux = graph_to_use.nodes[u].get('x', 0)
-            uy = graph_to_use.nodes[u].get('y', 0)
-            vx = graph_to_use.nodes[v].get('x', 0)
-            vy = graph_to_use.nodes[v].get('y', 0)
+            ux = graph.nodes[u].get('x', 0)
+            uy = graph.nodes[u].get('y', 0)
+            vx = graph.nodes[v].get('x', 0)
+            vy = graph.nodes[v].get('y', 0)
 
             try:
-                edge_data = graph_to_use.get_edge_data(u, v)
+                edge_data = graph.get_edge_data(u, v)
                 if edge_data is None:
-                    self.path.append((vx, vy))
+                    waypoints.append((vx, vy))
                     continue
                 key = list(edge_data.keys())[0]
                 data = edge_data[key]
@@ -64,12 +126,84 @@ class Firetruck(Agent):
                     dist_last = math.sqrt((ux - coords[-1][0])**2 + (uy-coords[-1][1])**2)
                     if dist_last < dist_first:
                         coords.reverse()
-                    self.path.extend(coords[1:])
+                    waypoints.extend(coords[1:])
                 else:
-                    self.path.append((vx, vy))
+                    waypoints.append((vx, vy))
 
             except Exception as e:
-                self.path.append((vx, vy))
+                waypoints.append((vx, vy))
+        return waypoints
+
+    def calculate_route_to_home(self):
+        start_n = ox.distance.nearest_nodes(self.model.G_drive, self.x, self.y)
+        target_n = ox.distance.nearest_nodes(self.model.G_drive, self.home_x, self.home_y)
+        try:
+            node_path = nx.shortest_path(self.model.G_drive, start_n, target_n, weight='length')
+            self.return_path = self.build_waypoint(self.model.G_drive, node_path)
+        except:
+            try:
+                start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                target_n = ox.distance.nearest_nodes(self.model.G_all, self.home_x, self.home_y)
+                node_path = nx.shortest_path(self.model.G_all, start_n, target_n, weight='length')
+                self.return_path = self.build_waypoint(self.model.G_all, node_path)
+            except:
+                self.return_path = []
+
+    def firefighter_boarded(self, ff):
+        self.boarded_count += 1
+        if self.boarded_count >= len(self.firefighters):
+            self.calculate_route_to_home()
+            self.path = self.return_path
+            self.frames_current = self.frames_total
+            self.is_returning = True
+
+    def spawn_firefighters(self):
+        num_firefighters = random.randint(3,4)
+        arc_spread = 1.0
+        start_angle = self.assigned_angle - (arc_spread / 2)
+        step_angle = arc_spread / max(1, (num_firefighters - 1))
+
+        for i in range(num_firefighters):
+            angle = start_angle + i * step_angle
+            ff = Firefighter(
+                f"FF_{self.unique_id}_{i}",
+                self.model,
+                self.x, self.y,
+                angle_offset=angle,
+                truck=self
+            )
+            self.firefighters.append(ff)
+            self.model.schedule.add(ff)
+
+    def find_best_position(self, truck_angle):
+        occupied = self.model.occupied_fire_angles
+        if not occupied:
+            return truck_angle
+        best_angle = truck_angle
+        best_min_dist = -1
+
+        for candidate_degree in range(0, 360, 45):
+            candidate = math.radians(candidate_degree)
+            min_dist = min(abs(math.atan2(math.sin(candidate - occ), math.cos(candidate - occ))) for occ in occupied)
+            if min_dist > best_min_dist:
+                best_min_dist = min_dist
+                best_angle = candidate
+        return best_angle
+
+    def assign_angle(self):
+        if not hasattr(self.model, 'occupied_fire_angles'):
+            self.model.occupied_fire_angles = []
+        for angle_degree in range(0, 360, 120):
+            if angle_degree not in self.model.occupied_fire_angles:
+                self.model.occupied_fire_angles.append(angle_degree)
+                return math.radians(angle_degree)
+        return random.uniform(0, 2*math.pi)
+
+    def fire_stay_position(self):
+        standoff = self.model.current_fire_radius + 28.0
+        sx = self.model.fire_center_x + math.cos(self.assigned_angle)*standoff
+        sy = self.model.fire_center_y + math.sin(self.assigned_angle)*standoff
+        return sx, sy
 
     def check_traffic(self):
         panicked_in_way = 0
@@ -90,32 +224,36 @@ class Firetruck(Agent):
             self.current_speed = self.base_speed
 
     def move(self):
-        if self.has_arrived:
+        if self.is_returning and not self.path:
+            dist_home = math.sqrt((self.x - self.home_x)**2 + (self.y - self.home_y)**2)
+            if dist_home < 5.0 or not self.return_path:
+                self.model.schedule.remove(self)
+                return
+
+        if self.has_arrived and not self.is_returning:
             return
+
         self.check_traffic()
 
-        dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
-        if dist_to_fire <= self.model.current_fire_radius + 8.0 or (self.frames_current >= self.frames_total and not self.path):
-            if not getattr(self, 'troops_delayed', False):
-                self.troops_delayed = True
-                self.has_arrived = True
-                self.path = []
-                from agent_firefighter import Firefighter
-                num_firefighters = random.randint(3,4)
-                base_angle = math.atan2(self.y - self.model.fire_center_y, self.x - self.model.fire_center_x)
-                arc_spread = 1.0
-                start_angle = base_angle - (arc_spread / 2)
-                step_angle = arc_spread / max(1, (num_firefighters - 1))
+        if not self.is_returning:
+            dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
+            safe_stop_dist = self.model.current_fire_radius + 25.0
+            dist_to_staging = math.sqrt((self.x-self.staging_x)**2 + (self.y-self.staging_y)**2)
 
-                for i in range(num_firefighters):
-                    angle = start_angle + i * step_angle
-                    ff = Firefighter(f"FF_{self.unique_id}_{i}", self.model, self.x, self.y, angle_offset=angle)
-                    self.model.schedule.add(ff)
-            return
+            if dist_to_fire <= safe_stop_dist or dist_to_staging <= 5.0 or (self.frames_current >= self.frames_total and not self.path):
+                if not self.troops_deployed:
+                    self.troops_deployed = True
+                    self.has_arrived = True
+                    self.path = []
+                    self.spawn_firefighters()
+                return
 
         if self.frames_current >= self.frames_total:
             if not self.path:
-                self.has_arrived = True
+                if self.is_returning:
+                    self.model.schedule.remove(self)
+                else:
+                    self.has_arrived = True
                 return
 
             next_point = self.path.pop(0)

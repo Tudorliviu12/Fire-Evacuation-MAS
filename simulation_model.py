@@ -11,9 +11,7 @@ from shapely.geometry import Point
 import random
 import math
 from building import Building
-from config import RAW_LOCATIONS, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, \
-    SMOKE_SPEED, \
-    SMOKE_GROWTH, SMOKE_LIFESPAN, WATER_EXTINGUISH_POWER
+from config import RAW_LOCATIONS, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, SMOKE_GROWTH, SMOKE_LIFESPAN, WATER_EXTINGUISH_POWER
 
 
 class CampusModel(Model):
@@ -27,6 +25,7 @@ class CampusModel(Model):
         self.schedule = mesa.time.RandomActivation(self)
         self.n_students = n_students
         self.fire_started = False
+        self.fire_ever_started = False
         self.fire_center_x = 0
         self.fire_center_y = 0
         self.current_fire_radius: float = 0.0
@@ -40,7 +39,15 @@ class CampusModel(Model):
         self.truck_dispatched = False
         self.truck_timer = 0
         self.hero_name = ""
+        self.fire_strength = 1
+        self.trucks_max_needed = 1
+        self.truck_count = 0
+        self.next_truck_timer = 0
+        self.ticks_fire_growing = 0
+        self.ticks_since_last_truck = 0
+        self.fire_growth_rate = FIRE_GROWTH_MIN
         self.G_working = self.G_all.copy()
+        self.occupied_fire_angles = []
         self.active_agents_cache = []
         self.hotspot_names = list(RAW_LOCATIONS.keys())
         self.hotspot_nodes = []
@@ -98,15 +105,23 @@ class CampusModel(Model):
                 chosen_building = self.buildings[chosen_idx]
                 a = Student(i, self, start_node=None, delay=0, indoors=True, building_idx=chosen_idx)
                 a.is_hidden = True
-                a.waiting_timer = random.randint(50,800)
+                a.waiting_timer = random.randint(300,5000)
                 a.current_building = chosen_building
                 chosen_building.inventory.append(a)
                 self.schedule.add(a)
 
     def ignite_fire(self, x, y):
-        if self.fire_started:
+        if self.fire_ever_started:
             return
         print(f"Fire started at {x}, {y}")
+        self.fire_ever_started = True
+        self.fire_strength = random.randint(1,4)
+        self.trucks_max_needed = min(3, self.fire_strength + 1)
+        self.truck_count = 0
+        self.next_truck_timer = 0
+        self.ticks_fire_growing = 0
+        self.ticks_since_last_truck = 0
+        self.fire_growth_rate = FIRE_GROWTH_MIN + (FIRE_GROWTH_MAX - FIRE_GROWTH_MIN) * (self.fire_strength - 1) / 4.0
         self.fire_started = True
         self.fire_center_x = x
         self.fire_center_y = y
@@ -174,25 +189,99 @@ class CampusModel(Model):
         ]
         for agent in to_remove:
             self.schedule.remove(agent)
+            if not self.fire_started:
+                chosen_idx = random.choices(range(len(self.buildings)), weights=self.buildings_weights, k=1)[0]
+                chosen_building = self.buildings[chosen_idx]
+                new_id = self.schedule.steps * 10000 + random.randint(0,9999)
+                new_agent = Student(new_id, self, start_node=None, delay=0, indoors=True, building_idx = chosen_idx)
+                new_agent.is_hidden = True
+                new_agent.waiting_timer = random.randint(500,3000)
+                new_agent.current_building = chosen_building
+                chosen_building.inventory.append(new_agent)
+                self.schedule.add(new_agent)
 
         if self.fire_started:
-            if self.alarm_triggered and not self.truck_dispatched:
-                self.truck_timer -= 1
-                if self.truck_timer <= 0:
-                    self.truck_dispatched = True
-                    entry_node = self.safe_nodes[0]
-                    entry_x = self.nodes_proj.loc[entry_node].geometry.x
-                    entry_y = self.nodes_proj.loc[entry_node].geometry.y
-                    auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
-                    truck = Firetruck("TRUCK_1", self, auto_entry)
-                    self.schedule.add(truck)
+            if self.alarm_triggered:
+                if not self.truck_dispatched:
+                    self.truck_timer -= 1
+                    if self.truck_timer <= 0:
+                        self.truck_dispatched = True
+                        self.truck_count = 1
+                        self.ticks_since_last_truck = 0
+                        entry_node = self.safe_nodes[0]
+                        entry_x = self.nodes_proj.loc[entry_node].geometry.x
+                        entry_y = self.nodes_proj.loc[entry_node].geometry.y
+                        auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
+                        truck = Firetruck("TRUCK_1", self, auto_entry)
+                        self.schedule.add(truck)
 
-            growth = random.uniform(FIRE_GROWTH_MIN, FIRE_GROWTH_MAX)
+                elif self.truck_count < self.trucks_max_needed:
+                    trucks_arrived = [
+                        a for a in self.schedule.agents
+                        if type(a).__name__ == 'Firetruck' and getattr(a, 'has_arrived', False)
+                    ]
+                    if not trucks_arrived:
+                        self.ticks_since_last_truck = 0
+                    else:
+                        self.ticks_since_last_truck += 1
+                        if self.ticks_fire_growing > 50 and self.ticks_since_last_truck > 100:
+                            self.truck_count += 1
+                            self.ticks_since_last_truck = 0
+                            self.ticks_fire_growing = 0
+                            entry_node = self.safe_nodes[0]
+                            entry_x = self.nodes_proj.loc[entry_node].geometry.x
+                            entry_y = self.nodes_proj.loc[entry_node].geometry.y
+                            auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
+                            truck = Firetruck(f"TRUCK_{self.truck_count}", self, auto_entry)
+                            self.schedule.add(truck)
+
+
+            growth = self.fire_growth_rate + random.uniform(-0.01, 0.01)
             if self.current_fire_radius > MAX_FIRE_RADIUS_SOFT_CAP:
                 growth = growth * 0.3
-            self.current_fire_radius += growth
-            target_blobs = min(int(self.current_fire_radius * 8), 500)
 
+            total_damage = 0.0
+            remaining = []
+            hit_positions = []
+            if hasattr(self, 'water_particles'):
+                for p in self.water_particles:
+                    p['x'] += p['vx']
+                    p['y'] += p['vy']
+                    p['life'] -= 1
+                    dist_to_fire = math.sqrt((p['x'] - self.fire_center_x)**2 + (p['y'] - self.fire_center_y)**2)
+                    hit = dist_to_fire <= self.current_fire_radius + 1.5
+                    dead = p['life'] <= 0
+                    if hit:
+                        damage = WATER_EXTINGUISH_POWER / max(1.0, self.fire_strength * 0.3)
+                        total_damage += damage
+                        hit_positions.append((p['x'], p['y']))
+                    elif not dead:
+                        remaining.append(p)
+                self.water_particles = remaining
+
+            change = growth - total_damage
+            if change > 0:
+                self.ticks_fire_growing += 1
+            else:
+                self.ticks_fire_growing = max(0, self.ticks_fire_growing - 1)
+
+            self.current_fire_radius += change
+            self.current_fire_radius = max(0.0, self.current_fire_radius)
+
+            if hit_positions:
+                extinguish_radius = 3.0
+                blobs_to_keep = []
+                for blob in self.fire_blobs:
+                    extinct = False
+                    for bx, by in hit_positions:
+                        if math.sqrt((blob['x'] - bx)**2 + (blob['y'] - by)**2) <= extinguish_radius:
+                            extinct = True
+                            break
+                    if not extinct:
+                        blobs_to_keep.append(blob)
+                self.fire_blobs = blobs_to_keep
+
+            target_blobs = min(int(self.current_fire_radius * 8), 500)
             while len(self.fire_blobs) < target_blobs:
                 ang = random.uniform(0, 2*math.pi)
                 dst = random.uniform(0, self.current_fire_radius)
@@ -200,11 +289,19 @@ class CampusModel(Model):
                     'x': self.fire_center_x + math.cos(ang)*dst,
                     'y': self.fire_center_y + math.sin(ang)*dst,
                 })
-                if len(self.fire_blobs) > target_blobs:
-                    self.fire_blobs = self.fire_blobs[:target_blobs]
+            if len(self.fire_blobs) > target_blobs:
+                self.fire_blobs = random.sample(self.fire_blobs, target_blobs)
+
+            if self.current_fire_radius <= 0.3:
+                self.current_fire_radius = 0.0
+                self.fire_started = False
+                self.fire_blobs = []
+                self.water_particles = []
+                self.smoke_blobs = []
+                for b in self.buildings:
+                    b.is_on_fire = False
 
             smoke_chance = 0.1 if self.current_fire_radius < 5 else 0.4
-
             if len(self.smoke_blobs) < MAX_SMOKE and random.random() < smoke_chance:
                 ang_spawn = random.uniform(0, 2*math.pi)
                 dst_spawn = random.uniform(0, self.current_fire_radius*0.3)
@@ -214,33 +311,17 @@ class CampusModel(Model):
                     'size': 5, 'age': 0,
                     'angle': self.wind_angle + random.uniform(-15, 15),
                 })
-            for i in range(len(self.smoke_blobs) -1, -1, -1):
+
+            for i in range(len(self.smoke_blobs) - 1, -1, -1):
                 smoke = self.smoke_blobs[i]
-                growth_factor = min(SMOKE_GROWTH * (self.current_fire_radius / 15.0), SMOKE_GROWTH*3)
+                growth_factor = min(SMOKE_GROWTH *(self.current_fire_radius/15.0), SMOKE_GROWTH*3)
                 smoke['size'] += max(0.1, growth_factor)
                 rad_b = math.radians(smoke['angle'])
-                smoke['x'] += math.cos(rad_b) * SMOKE_SPEED
-                smoke['y'] += math.sin(rad_b) * SMOKE_SPEED
+                smoke['x'] += math.cos(rad_b)*SMOKE_SPEED
+                smoke['y'] += math.sin(rad_b)*SMOKE_SPEED
                 smoke['age'] += 1
                 if smoke['age'] > SMOKE_LIFESPAN:
                     self.smoke_blobs.pop(i)
-
-            if hasattr(self, 'water_particles'):
-                for i in range(len(self.water_particles) -1, -1, -1):
-                    p = self.water_particles[i]
-                    p['x'] += p['vx']
-                    p['y'] += p['vy']
-                    p['life'] -= 1
-
-                    dist_to_fire = math.sqrt(
-                        (p['x'] - self.fire_center_x)**2 + (p['y'] - self.fire_center_y)**2)
-                    hit = dist_to_fire <= self.current_fire_radius + 1.5
-                    dead = p['life'] <= 0
-                    if hit or dead:
-                        if hit and self.current_fire_radius > 0.5:
-                            self.current_fire_radius -= WATER_EXTINGUISH_POWER
-                            self.current_fire_radius = max(0.5, self.current_fire_radius)
-                        self.water_particles.pop(i)
 
         self.block_fire_edges()
         if self.fire_started and self.schedule.steps % 3 == 0:

@@ -33,7 +33,7 @@ class Firetruck(Agent):
         self.calculate_route_to_fire()
 
     def build_safe_Gdrive(self, base_graph):
-        fire_radius = max(self.model.current_fire_radius + 20.0, 25.0)
+        fire_radius = max(self.model.current_fire_radius + 5.0, 10.0)
         safe = base_graph.copy()
         to_remove = [
             n for n in safe.nodes()
@@ -159,7 +159,7 @@ class Firetruck(Agent):
 
     def spawn_firefighters(self):
         num_firefighters = random.randint(3,4)
-        arc_spread = 1.0
+        arc_spread = 2.0
         start_angle = self.assigned_angle - (arc_spread / 2)
         step_angle = arc_spread / max(1, (num_firefighters - 1))
 
@@ -193,14 +193,19 @@ class Firetruck(Agent):
     def assign_angle(self):
         if not hasattr(self.model, 'occupied_fire_angles'):
             self.model.occupied_fire_angles = []
-        for angle_degree in range(0, 360, 120):
-            if angle_degree not in self.model.occupied_fire_angles:
-                self.model.occupied_fire_angles.append(angle_degree)
-                return math.radians(angle_degree)
-        return random.uniform(0, 2*math.pi)
+        for angle_degree in range(0, 360, 45):
+            angle_rad = math.radians(angle_degree)
+            too_close = any(
+                abs(math.atan2(math.sin(angle_rad - occ), math.cos(angle_rad - occ))) < math.radians(30)
+                for occ in self.model.occupied_fire_angles
+            )
+            if not too_close:
+                self.model.occupied_fire_angles.append(angle_rad)
+                return angle_rad
+        return self.find_best_position(random.uniform(0, 2*math.pi))
 
     def fire_stay_position(self):
-        standoff = self.model.current_fire_radius + 28.0
+        standoff = 20.0
         sx = self.model.fire_center_x + math.cos(self.assigned_angle)*standoff
         sy = self.model.fire_center_y + math.sin(self.assigned_angle)*standoff
         return sx, sy
@@ -237,10 +242,18 @@ class Firetruck(Agent):
 
         if not self.is_returning:
             dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
-            safe_stop_dist = self.model.current_fire_radius + 25.0
+            safe_stop_dist = self.model.current_fire_radius + 5.0
             dist_to_staging = math.sqrt((self.x-self.staging_x)**2 + (self.y-self.staging_y)**2)
 
-            if dist_to_fire <= safe_stop_dist or dist_to_staging <= 5.0 or (self.frames_current >= self.frames_total and not self.path):
+            too_close_to_truck = False
+            for other in self.model.schedule.agents:
+                if type(other).__name__ == ('Firetruck') and other is not self:
+                    d = math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
+                    if d < 15.0:
+                        too_close_to_truck = True
+                        break
+
+            if dist_to_fire <= safe_stop_dist or dist_to_staging <= 5.0 or too_close_to_truck or (self.frames_current >= self.frames_total and not self.path):
                 if not self.troops_deployed:
                     self.troops_deployed = True
                     self.has_arrived = True

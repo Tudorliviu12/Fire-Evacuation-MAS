@@ -3,8 +3,10 @@ import networkx as nx
 import osmnx as ox
 import math
 import random
+from shapely.geometry import Point
 from typing import TYPE_CHECKING
 from config import FIREFIGHTER_STANDOFF, MIN_FIREFIGHTER_DIST, WATER_SPREAD_ANGLE, WATER_PARTICLES_PER_FRAME, WATER_PARTICLE_SPEED, WATER_EXTINGUISH_POWER, FIREFIGHTER_RETREAT_DIST, FIREFIGHTER_ADVANCE_DIST
+from pathfinder import DStarLite
 if TYPE_CHECKING:
     from simulation_model import CampusModel
 
@@ -29,15 +31,86 @@ class Firefighter(Agent):
         self.is_dead = False
         self.is_walking_path = True
         self.is_returning = False
+        self.stuck_timer = 0
+        self.stuck_last_x = self.x
+        self.stuck_last_y = self.y
+        self.escape_node = None
 
         self.target_x: float = self.x
         self.target_y: float = self.y
 
+        self.dstar = None
+        self.dstar_goal = None
+        self.path = []
+        self.edge_waypoints = []
+        self.frames_current = 0
+        self.frames_total = 1
+        self.start_x, self.start_y = self.x, self.y
+        self.end_x, self.end_y = self.x, self.y
+        self.has_arrived = False
+        self.is_hidden = False
+        self.tunnel_dx = 0.0
+        self.tunnel_dy = 0.0
+        self.tunnel_cooldown = 0
+        self.pos_history = []
+
         self.compute_standoff_post()
+        self.init_path_to_post()
 
     def compute_standoff_post(self):
-        self.target_x = self.model.fire_center_x + math.cos(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
-        self.target_y = self.model.fire_center_y + math.sin(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
+        ideal_x = self.model.fire_center_x + math.cos(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
+        ideal_y = self.model.fire_center_y + math.sin(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
+
+        if getattr(self.model, 'buildings_shape', None) is None:
+            self.target_x, self.target_y = ideal_x, ideal_y
+            return
+
+        ideal_pt = Point(ideal_x, ideal_y)
+
+        if not self.model.buildings_shape.contains(ideal_pt) and self.model.buildings_shape.distance(ideal_pt) > 2.0:
+            self.target_x, self.target_y = ideal_x, ideal_y
+            return
+
+        for step in range(1,25):
+            for sign in [1, -1]:
+                test_angle = self.angle_offset + sign * (step* 0.26)
+                tx = self.model.fire_center_x + math.cos(test_angle) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
+                ty = self.model.fire_center_y + math.sin(test_angle) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
+
+                pt = Point(tx, ty)
+                if not self.model.buildings_shape.contains(pt) and self.model.buildings_shape.distance(pt) > 2.0:
+                    self.angle_offset = test_angle
+                    self.target_x = tx
+                    self.target_y = ty
+                    return
+        self.target_x, self.target_y = ideal_x, ideal_y
+
+    def init_path_to_post(self):
+        try:
+            start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+            goal_n = ox.distance.nearest_nodes(self.model.G_all, self.target_x, self.target_y)
+        except Exception:
+            return
+
+        if start_n == goal_n:
+            return
+
+        try:
+            self.dstar = DStarLite(self.model.G_all, start_n, goal_n)
+            self.dstar_goal = goal_n
+            self.dstar.compute_shortest_path()
+            full_path = self.dstar.get_path()
+            if full_path and len(full_path) > 1:
+                self.path = full_path[1:]
+                return
+            self.path = nx.shortest_path(self.model.G_all, start_n, goal_n, weight='length')[1:]
+        except Exception:
+            try:
+                start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                goal_n = ox.distance.nearest_nodes(self.model.G_all, self.target_x, self.target_y)
+                self.path = nx.shortest_path(self.model.G_all, start_n, goal_n, weight='length')[1:]
+            except Exception:
+                self.path = []
 
     def is_too_close(self, x, y):
         for agent in self.model.active_agents_cache:
@@ -50,6 +123,14 @@ class Firefighter(Agent):
 
     def move(self):
         if (not self.model.fire_started or self.is_returning) and self.truck:
+            if not self.is_returning:
+                self.pos_history = []
+                self.path = []
+                self.edge_waypoints = []
+                self.frames_current = 0
+                self.frames_total = 1
+                self.start_x, self.start_y = self.x, self.y
+                self.end_x, self.end_y = self.x, self.y
             self.is_returning = True
             tx, ty = self.truck.x, self.truck.y
             dx = tx - self.x
@@ -60,33 +141,130 @@ class Firefighter(Agent):
                 self.is_active = False
                 if self in self.model.schedule.agents:
                     self.model.schedule.remove(self)
+                return
+            if not self.path and not self.edge_waypoints:
+                try:
+                    start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                    end_n = ox.distance.nearest_nodes(self.model.G_all, tx, ty)
+                    self.path = nx.shortest_path(self.model.G_all, start_n, end_n, weight='length')[1:]
+                    self.dstar = None
+                    self.edge_waypoints = []
+                except Exception:
+                    self.path = []
+
+            if self.frames_current >= self.frames_total:
+                if self.edge_waypoints:
+                    next_pt = self.edge_waypoints.pop(0)
+                    self.start_x, self.start_y = self.x, self.y
+                    self.end_x, self.end_y = next_pt
+                    dist_seg = math.sqrt((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)
+                    self.frames_total = max(1, int(dist_seg / (self.base_speed * 1.5)))
+                    self.frames_current = 0
+                elif self.path:
+                    next_node = self.path.pop(0)
+                    self.edge_waypoints = []
+                    try:
+                        curr_node = self.path[0] if self.path else next_node
+                        edge_data = self.model.G_all.get_edge_data(curr_node, next_node) or self.model.G_all.get_edge_data(next_node, curr_node)
+                        if edge_data is not None:
+                            key = list(edge_data.keys())[0]
+                            data = edge_data[key]
+                            if 'geometry' in data:
+                                coords = list(data['geometry'].coords)
+                                d_first = math.sqrt((self.x - coords[0][0])**2 + (self.y - coords[0][1])**2)
+                                d_last = math.sqrt((self.x - coords[-1][0])**2 + (self.y - coords[-1][1])**2)
+                                if d_last < d_first:
+                                    coords.reverse()
+                                self.edge_waypoints = coords[1:]
+                    except Exception:
+                        pass
+                    if self.edge_waypoints:
+                        next_pt = self.edge_waypoints.pop(0)
+                        self.start_x, self.start_y = self.x, self.y
+                        self.end_x, self.end_y = next_pt
+                    else:
+                        node_data = self.model.nodes_proj.loc[next_node]
+                        self.start_x, self.start_y = self.x, self.y
+                        self.end_x, self.end_y = node_data.geometry.x, node_data.geometry.y
+                    dist_seg = math.sqrt((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)
+                    self.frames_total = max(1, int(dist_seg / (self.base_speed * 1.5)))
+                    self.frames_current = 0
+                else:
+                    self.x, self.y = self.model.move_avoid_buildings(
+                        self.x, self.y, tx, ty, self.base_speed * 1.5, self.model.buildings_shape
+                    )
+                    return
+
+            self.frames_current += 1
+            fraction = self.frames_current / self.frames_total
+            self.x = self.start_x + fraction * (self.end_x - self.start_x)
+            self.y = self.start_y + fraction * (self.end_y - self.start_y)
+            return
+
+
+        dist_to_fire = math.sqrt((self.x - self.model.fire_center_x) ** 2 + (self.y - self.model.fire_center_y) ** 2)
+
+        if dist_to_fire < self.model.current_fire_radius + 3.0:
+            dx = self.x - self.model.fire_center_x
+            dy = self.y - self.model.fire_center_y
+            norm = max(0.1, math.sqrt(dx * dx + dy * dy))
+            self.x += (dx / norm) * self.current_speed * 2
+            self.y += (dy / norm) * self.current_speed * 2
+            return
+
+        if self.has_arrived:
+            dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
+            ideal_dist = self.model.current_fire_radius + FIREFIGHTER_STANDOFF
+            if dist_to_fire > ideal_dist + 15.0:
+                self.has_arrived = False
+                self.pos_history = []
             else:
-                speed = self.base_speed * 1.5
-                self.x += (dx/dist) * speed
-                self.y += (dy/dist) * speed
+                self.shoot_water()
+                return
+
+        self.compute_standoff_post()
+        dist_to_post = math.sqrt((self.target_x - self.x) ** 2 + (self.target_y - self.y) ** 2)
+
+        if dist_to_post <= 3.0:
+            self.has_arrived = True
             return
 
-        self.target_x = self.model.fire_center_x + math.cos(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
-        self.target_y = self.model.fire_center_y + math.sin(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF)
-        dist_to_post = math.sqrt((self.target_x-self.x)**2 + (self.target_y-self.y)**2)
+        self.x, self.y = self.model.move_avoid_buildings(
+            self.x, self.y, self.target_x, self.target_y,
+            self.current_speed, self.model.buildings_shape
+        )
 
-        if dist_to_post<=1.5:
-            self.shoot_water()
-            return
+        if not hasattr(self, 'pos_history'):
+            self.pos_history = []
+        self.pos_history.append((self.x, self.y))
+        if len(self.pos_history) > 25:
+            self.pos_history.pop(0)
 
-        dir_x = (self.target_x - self.x)/max(0.1, dist_to_post)
-        dir_y = (self.target_y - self.y) / max(0.1, dist_to_post)
-        next_x = self.x + dir_x * self.current_speed
-        next_y = self.y + dir_y * self.current_speed
-        next_dist_to_fire = math.sqrt((next_x-self.model.fire_center_x)**2 + (next_y-self.model.fire_center_y)**2)
-        if next_dist_to_fire < self.model.current_fire_radius + 2.5:
-            next_x, next_y = self.x, self.y
+        if len(self.pos_history) >= 25 and not self.is_returning:
+            old_x, old_y = self.pos_history[0]
+            total_moved = math.sqrt((self.x - old_x)**2 + (self.y - old_y)**2)
+            if total_moved < 1.0:
+                self.pos_history = []
+                self.teleport_around_fire()
 
-        if self.is_too_close(next_x, next_y):
-            next_x += random.uniform(-0.5, 0.5)
-            next_y += random.uniform(-0.5, 0.5)
 
-        self.x, self.y = next_x, next_y
+    def teleport_around_fire(self):
+        buildings_shape = getattr(self.model, 'buildings_shape', None)
+        for attempt in range(36):
+            angle = self.angle_offset + (attempt * math.pi / 18)
+            r = self.model.current_fire_radius + FIREFIGHTER_STANDOFF + random.uniform(0, 5)
+            tx = self.model.fire_center_x + math.cos(angle) * r
+            ty = self.model.fire_center_y + math.sin(angle) * r
+            if buildings_shape is None or not buildings_shape.contains(Point(tx, ty)):
+                self.x = tx
+                self.y = ty
+                self.has_arrived = True
+                self.is_hidden = False
+                return
+        self.x = self.model.fire_center_x + math.cos(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF + 10)
+        self.y = self.model.fire_center_y + math.sin(self.angle_offset) * (self.model.current_fire_radius + FIREFIGHTER_STANDOFF + 10)
+        self.has_arrived = True
+        self.is_hidden = False
 
     def return_to_truck(self):
         if self.truck is None:
@@ -101,8 +279,9 @@ class Firefighter(Agent):
             self.model.schedule.remove(self)
         else:
             speed = self.base_speed * 1.5
-            self.x += (dx/dist)*speed
-            self.y += (dy/dist)*speed
+            self.x, self.y = self.model.move_avoid_buildings(
+                self.x, self.y, tx, ty, speed, self.model.buildings_shape
+            )
 
     def shoot_water(self):
         if self.burst_paused > 0:
@@ -114,7 +293,9 @@ class Firefighter(Agent):
 
         dx = self.model.fire_center_x - self.x
         dy = self.model.fire_center_y - self.y
+        dist_to_fire = math.sqrt(dx * dx + dy * dy)
         base_angle = math.atan2(dy, dx)
+        exact_life = int(dist_to_fire / WATER_PARTICLE_SPEED) + random.randint(0,2)
 
         for _ in range(WATER_PARTICLES_PER_FRAME):
             angle = base_angle + random.uniform(-WATER_SPREAD_ANGLE, WATER_SPREAD_ANGLE)
@@ -123,7 +304,7 @@ class Firefighter(Agent):
                 'y': self.y,
                 'vx': math.cos(angle)*WATER_PARTICLE_SPEED,
                 'vy': math.sin(angle)*WATER_PARTICLE_SPEED,
-                'life': 60,
+                'life': exact_life
             })
 
         self.burst_count += 1

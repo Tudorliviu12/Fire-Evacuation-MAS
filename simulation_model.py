@@ -8,6 +8,7 @@ from agent_firetruck import Firetruck
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point
+from shapely.ops import unary_union
 import random
 import math
 from building import Building
@@ -49,9 +50,11 @@ class CampusModel(Model):
         self.G_working = self.G_all.copy()
         self.occupied_fire_angles = []
         self.active_agents_cache = []
+        self.pending_alerts = []
         self.hotspot_names = list(RAW_LOCATIONS.keys())
         self.hotspot_nodes = []
         self.hotspot_weights = []
+        self.buildings_shape = unary_union(buildings_gdf.geometry) if not buildings_gdf.empty else None
 
         for name in self.hotspot_names:
             lat_raw, lon_raw, weight = RAW_LOCATIONS[name]
@@ -82,6 +85,7 @@ class CampusModel(Model):
 
             name = row.get('nume_Camin', f"Camin_T{idx+1}")
             b = Building(name=name, door_node=door_node, door_coords=door_coords, area=area)
+            b.osm_polygon = row.geometry
             self.buildings.append(b)
             self.buildings_weights.append(area)
 
@@ -101,7 +105,13 @@ class CampusModel(Model):
                 a = Student(i, self, start_node, delay=0, indoors=False)
                 self.schedule.add(a)
             else:
-                chosen_idx = random.choices(range(len(self.buildings)), weights=self.buildings_weights, k=1)[0]
+                if random.random() < 0.6:
+                    dorm_indices = list(range(22))
+                    dorm_weights = self.buildings_weights[:22]
+                    chosen_idx = random.choices(dorm_indices, weights=dorm_weights, k=1)[0]
+                else:
+                    chosen_idx = random.choices(range(len(self.buildings)), weights=self.buildings_weights, k=1)[0]
+
                 chosen_building = self.buildings[chosen_idx]
                 a = Student(i, self, start_node=None, delay=0, indoors=True, building_idx=chosen_idx)
                 a.is_hidden = True
@@ -109,6 +119,24 @@ class CampusModel(Model):
                 a.current_building = chosen_building
                 chosen_building.inventory.append(a)
                 self.schedule.add(a)
+
+    def snap_to_nearest_hotspot(self, x, y):
+        best_dist = float('inf')
+        best_building = None
+        for building in self.buildings:
+            if building.name not in RAW_LOCATIONS:
+                continue
+            _, _, weight = RAW_LOCATIONS[building.name]
+            snap_radius = 10 + weight * 0.5
+            dist = math.sqrt((building.door_coords[0] - x)**2 + (building.door_coords[1] - y)**2)
+            if dist < snap_radius and dist < best_dist:
+                best_dist = dist
+                best_building = building
+
+        if best_building is not None:
+            best_building.is_on_fire = True
+            return (x,y)
+        return (x,y)
 
     def ignite_fire(self, x, y):
         if self.fire_ever_started:
@@ -168,11 +196,20 @@ class CampusModel(Model):
     def check_buildings_fire(self):
         if not self.fire_started:
             return
+        fire_pt = Point(self.fire_center_x, self.fire_center_y)
         for building in self.buildings:
             if not building.is_on_fire:
-                dist = math.sqrt((building.door_coords[0] - self.fire_center_x)**2 + (building.door_coords[1] - self.fire_center_y)**2)
-                if dist<(self.current_fire_radius + 30.0):
-                    building.is_on_fire = True
+                if building.osm_polygon is not None:
+                    if building.osm_polygon.contains(fire_pt):
+                        building.is_on_fire = True
+                    else:
+                        dist = fire_pt.distance(building.osm_polygon)
+                        if dist<(self.current_fire_radius + 5.0):
+                            building.is_on_fire = True
+                else:
+                    dist = math.sqrt((building.door_coords[0] - self.fire_center_x)**2 + (building.door_coords[1] - self.fire_center_y)**2)
+                    if dist < self.current_fire_radius + 30.0:
+                        building.is_on_fire = True
             building.evacuate_step()
 
     def notify_agents_edge_burned(self, u, v):
@@ -235,7 +272,6 @@ class CampusModel(Model):
                             truck = Firetruck(f"TRUCK_{self.truck_count}", self, auto_entry)
                             self.schedule.add(truck)
 
-
             growth = self.fire_growth_rate + random.uniform(-0.01, 0.01)
             if self.current_fire_radius > MAX_FIRE_RADIUS_SOFT_CAP:
                 growth = growth * 0.3
@@ -249,10 +285,18 @@ class CampusModel(Model):
                     p['y'] += p['vy']
                     p['life'] -= 1
                     dist_to_fire = math.sqrt((p['x'] - self.fire_center_x)**2 + (p['y'] - self.fire_center_y)**2)
-                    hit = dist_to_fire <= self.current_fire_radius + 1.5
+
+                    if self.current_fire_radius < 5.0:
+                        hit_radius = max(2.0, self.current_fire_radius * 1.5)
+                        small_fire_boost = max(1.0, 5.0/max(0.5, self.current_fire_radius))
+                    else:
+                        hit_radius = max(1.5, self.current_fire_radius * 0.8)
+                        small_fire_boost = 1.0
+
+                    hit = dist_to_fire <= hit_radius
                     dead = p['life'] <= 0
                     if hit:
-                        damage = WATER_EXTINGUISH_POWER / max(1.0, self.fire_strength * 0.3)
+                        damage = (WATER_EXTINGUISH_POWER * small_fire_boost) / max(1.0, self.fire_strength * 0.3)
                         total_damage += damage
                         hit_positions.append((p['x'], p['y']))
                     elif not dead:
@@ -282,13 +326,16 @@ class CampusModel(Model):
                 self.fire_blobs = blobs_to_keep
 
             target_blobs = min(int(self.current_fire_radius * 8), 500)
-            while len(self.fire_blobs) < target_blobs:
+            attempts = 0
+            while len(self.fire_blobs) < target_blobs and attempts < target_blobs * 5:
+                attempts += 1
                 ang = random.uniform(0, 2*math.pi)
                 dst = random.uniform(0, self.current_fire_radius)
-                self.fire_blobs.append({
-                    'x': self.fire_center_x + math.cos(ang)*dst,
-                    'y': self.fire_center_y + math.sin(ang)*dst,
-                })
+                bx = self.fire_center_x + math.cos(ang)*dst
+                by = self.fire_center_y + math.sin(ang)*dst
+                pt = Point(bx, by)
+                if not any(b.osm_polygon is not None and b.osm_polygon.contains(pt) for b in self.buildings):
+                    self.fire_blobs.append({'x': bx, 'y': by})
             if len(self.fire_blobs) > target_blobs:
                 self.fire_blobs = random.sample(self.fire_blobs, target_blobs)
 
@@ -324,10 +371,19 @@ class CampusModel(Model):
                     self.smoke_blobs.pop(i)
 
         self.block_fire_edges()
-        if self.fire_started and self.schedule.steps % 3 == 0:
+        if self.fire_started and self.schedule.steps % 10 == 0:
             self.check_buildings_fire()
+        if self.pending_alerts:
+            still_pending = []
+            for (tick, student, sender_name) in self.pending_alerts:
+                if self.schedule.steps >= tick:
+                    if not student.is_dead and not student.is_aware:
+                        student.informed_by = sender_name
+                        student.become_panicked()
+                else:
+                    still_pending.append((tick, student, sender_name))
+            self.pending_alerts = still_pending
         self.schedule.step()
-
 
     def is_near_any_smoke(self, x, y):
         if not self.fire_started:
@@ -337,3 +393,22 @@ class CampusModel(Model):
             if d<blob['size']:
                 return True
         return False
+
+    def move_avoid_buildings(self, x, y, tx, ty, speed, buildings_shape):
+        dx = tx - x
+        dy = ty - y
+        dist = math.sqrt(dx*dx + dy*dy)
+        if dist < 0.1:
+            return x,y
+        nx = x + (dx/dist)*speed
+        ny = y + (dy/dist)*speed
+        if buildings_shape and buildings_shape.contains(Point(nx, ny)):
+            base_angle = math.atan2(dy, dx)
+            for i in [0.3, -0.3, 0.6, -0.6, 0.9, -0.9, math.pi/2, -math.pi/2]:
+                alt_angle = base_angle + i
+                alt_x = x + math.cos(alt_angle)*speed
+                alt_y = y + math.sin(alt_angle)*speed
+                if not buildings_shape.contains(Point(alt_x, alt_y)):
+                    return alt_x, alt_y
+            return x, y
+        return nx, ny

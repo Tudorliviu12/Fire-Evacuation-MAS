@@ -50,8 +50,15 @@ def load_campus_map():
     G_all = G_all.subgraph(largest_cc).copy()
 
     single_nodes = [n for n, d in G_all.degree() if d==0]
+    nodes_in_building = [
+        n for n in G_all.nodes()
+        if all_buildings_shape.contains(Point(nodes_proj.loc[n].geometry.x, nodes_proj.loc[n].geometry.y))
+    ]
     G_all.remove_nodes_from(single_nodes)
+    G_all.remove_nodes_from(nodes_in_building)
 
+    largest_cc = max(nx.connected_components(G_all), key=len)
+    G_all = G_all.subgraph(largest_cc).copy()
     nodes_proj, edges_proj = ox.graph_to_gdfs(G_all)
 
     safe_nodes = [

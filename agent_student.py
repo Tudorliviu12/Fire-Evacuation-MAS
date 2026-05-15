@@ -44,6 +44,8 @@ class Student(Agent):
         self.flee_cooldown = 0
         self.visited_flee_targets = set()
         self.call_timer = 0
+        self.informed_by = None
+        self.alert_cooldown = 0
 
         if indoors and building_idx is not None and building_idx < 22:
             self.is_resident = True
@@ -81,7 +83,10 @@ class Student(Agent):
         self.dstar_goal = None
         self.last_fire_radius_notified = 0.0
         self.choose_new_mission()
-
+        if self.is_resident:
+            self.target_floor = random.randint(0,4)
+        else:
+            self.target_floor = 0
     def init_dstar(self, goal_node):
         curr_node = ox.distance.nearest_nodes(self.model.G_working, self.x, self.y)
         if not self.model.G_working.has_node(curr_node) or not self.model.G_working.has_node(goal_node):
@@ -339,6 +344,8 @@ class Student(Agent):
             return
 
         if self.is_hidden:
+            if self.current_building and getattr(self.current_building, 'interior_grid', None) is not None:
+                return
             self.waiting_timer -= 1
             if self.waiting_timer <= 0:
                 if not self.is_aware and random.random() < 0.35:
@@ -367,6 +374,11 @@ class Student(Agent):
             return
 
         if not self.path and self.frames_current >= self.frames_total:
+            if self.model.fire_started and self.target_node is not None:
+                target_building = next((b for b in self.model.buildings if b.door_node == self.target_node and b.is_on_fire), None)
+                if target_building:
+                    self.choose_new_mission()
+                    return
             if self.is_aware and self.model.fire_started:
                 dist_to_fire = math.sqrt((self.x - self.model.fire_center_x)**2 + (self.y - self.model.fire_center_y)**2)
                 if dist_to_fire < self.model.current_fire_radius + 40.0:
@@ -389,14 +401,14 @@ class Student(Agent):
             self.is_hidden = True
             if target_building:
                 self.current_building = target_building
-                if self not in target_building.inventory:
-                    target_building.inventory.append(self)
-                if "Mall" in target_building.name or "T" in target_building.name:
-                    self.waiting_timer = random.randint(1500,6000)
-                elif "Facultate" in target_building.name:
-                    self.waiting_timer = random.randint(1200,4000)
-                else:
-                    self.waiting_timer = random.randint(600,2000)
+                target_building.accept_student(self)
+                if not getattr(target_building, 'interior_grid', None):
+                    if "Mall" in target_building.name or "T" in target_building.name:
+                        self.waiting_timer = random.randint(1500,6000)
+                    elif "Facultate" in target_building.name:
+                        self.waiting_timer = random.randint(1200,4000)
+                    else:
+                        self.waiting_timer = random.randint(600,2000)
             else:
                 self.waiting_timer = random.randint(400,1000)
                 if "Going To" in self.target_name:
@@ -509,6 +521,15 @@ class Student(Agent):
                     self.pick_safe_destination() if self.model.fire_started else self.choose_new_mission()
             else:
                 self.recalculate_path(retries=1)
+
+        if self.model.fire_started and self.alert_cooldown == 0:
+            self.alert_cooldown = 999
+            all_students = [a for a in self.model.schedule.agents if type(a).__name__ == 'Student' and not a.is_aware and not a.is_dead and a is not self]
+            targets = random.sample(all_students, min(random.randint(1, 3), len(all_students)))
+            for t in targets:
+                delay = random.randint(80,400)
+                self.model.pending_alerts.append((self.model.schedule.steps + delay, t, self.full_name))
+
 
     def check_survival(self):
         if self.is_dead or not self.model.fire_started:
@@ -627,12 +648,22 @@ class Student(Agent):
             self.target_name = self.model.hotspot_names[choice_idx]
             self.target_node = self.model.hotspot_nodes[choice_idx]
 
+            target_building = next(
+                (b for b in self.model.buildings if b.name == self.target_name and b.is_on_fire),
+                None
+            )
+            if target_building is not None:
+                self.pick_safe_destination()
+                return
+
         else:
             if self.home_dorm_idx is not None:
                 dorm_node = self.model.dorm_nodes[self.home_dorm_idx]
-                if self.node_is_safe_dest(dorm_node):
+                dorm_building = self.model.buildings[self.home_dorm_idx]
+                if self.node_is_safe_dest(dorm_node) and not dorm_building.is_on_fire:
                     self.target_name = f"Cămin T{self.home_dorm_idx+1}"
                     self.target_node = dorm_node
+                    self.target_floor = random.randint(0,4)
                 else:
                     self.pick_safe_destination()
                     return

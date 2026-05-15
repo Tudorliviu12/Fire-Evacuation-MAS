@@ -1,11 +1,15 @@
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import matplotlib.gridspec as gridspec
 import random
+import geopandas as gpd
 import numpy as np
 import contextily as ctx
-from matplotlib.patches import Patch, FancyBboxPatch
+from matplotlib.patches import Polygon
 from matplotlib.lines import Line2D
+from matplotlib.widgets import Button
 from map_loader import *
+from shapely.geometry import Point
 from simulation_model import CampusModel
 from config import TARGET_POPULATION_MIN, TARGET_POPULATION_MAX, SMOKE_LIFESPAN
 
@@ -21,19 +25,73 @@ if __name__ == '__main__':
 
     plt.rcParams['keymap.fullscreen'].remove('f')
 
-    fig, (ax, ax_menu) = plt.subplots(1, 2, gridspec_kw={'width_ratios':[4, 1.2]}, figsize=(14,9))
-    ax_menu.set_axis_off()
-    menu_text = ax_menu.text(0.05, 0.95, "", transform=ax_menu.transAxes, verticalalignment='top', fontsize=10, bbox=dict(boxstyle='round', facecolor='#f8f9fa', edgecolor='gray', alpha=0.8))
+    fig = plt.figure(figsize=(15,9))
+    gs = gridspec.GridSpec(3, 2, width_ratios=[4, 1.2], height_ratios=[1.2, 1.4, 0.10], hspace=0.05, wspace=0.05)
+    ax = fig.add_subplot(gs[:, 0])
+    ax_info = fig.add_subplot(gs[0, 1])
+    ax_inter = fig.add_subplot(gs[1, 1])
+    ax_btns = fig.add_subplot(gs[2, 1])
+    ax_info.set_axis_off()
+    ax_inter.set_axis_off()
+    ax_inter.set_facecolor('#f0f0f0')
+    ax_btns.set_axis_off()
 
-    alert_panel = ax_menu.text(0.05, 0.98, "", transform=ax_menu.transAxes, verticalalignment='top', fontsize=12, fontweight='bold', bbox=dict(boxstyle='round, pad=0.5', facecolor='#ff4d4d', edgecolor='black', alpha=0.9))
+    pos = ax_btns.get_position()
+    btn_h = pos.height*0.85
+    btn_y = pos.y0 + pos.height * 0.075
+    btn_w = pos.width * 0.44
+
+    ax_alerts = fig.add_axes([0.02, 0.75, 0.2, 0.22])
+    ax_alerts.set_axis_off()
+    alert_panel = ax_alerts.text(
+        0.0, 1.0, "", transform=ax_alerts.transAxes, va='top', fontsize=9, fontweight='bold', bbox=dict(boxstyle='round, pad=0.3', fc='#ff4d4d', ec='black', alpha=0.9), zorder=998)
     alert_panel.set_visible(False)
+    fire_panel = ax_alerts.text(
+        0.0, 1.0, "", transform=ax_alerts.transAxes, va='top', fontsize=8, fontweight='bold',
+        bbox=dict(boxstyle='round, pad=0.3', fc='#ffcccc', ec='black', alpha=0.9), zorder=998)
 
-    fire_panel = ax_menu.text(0.05, 0.80, "", transform=ax_menu.transAxes, verticalalignment="top", fontsize=10, bbox=dict(boxstyle='round', facecolor='#ffcccc', edgecolor='red', alpha=0.9))
-    fire_panel.set_visible(False)
+    menu_text = ax_info.text(0.05, 0.98, "", transform=ax_info.transAxes, va='top', fontsize=8, bbox=dict(boxstyle='round, pad=0.3', fc='#e6f2ff', ec='gray', alpha=0.9))
+
+    selected_building = None
+    current_floor = 0
+    ax_btn_down = fig.add_axes([pos.x0, btn_y, btn_w, btn_h])
+    ax_btn_up = fig.add_axes([pos.x0 + pos.width * 0.56, btn_y, btn_w, btn_h])
+    btn_down = Button(ax_btn_down, 'Down', color='#dde', hovercolor='#aac')
+    btn_up = Button(ax_btn_up, 'Up', color='#dde', hovercolor='#aac')
+    ax_btn_down.set_visible(False)
+    ax_btn_up.set_visible(False)
+
+    def floor_up(event):
+        global current_floor
+        if selected_building and current_floor < 4:
+            current_floor += 1
+            render_interior(selected_building, current_floor)
+
+    def floor_down(event):
+        global current_floor
+        if selected_building and current_floor > 0:
+            current_floor -= 1
+            render_interior(selected_building, current_floor)
+
+    btn_up.on_clicked(floor_up)
+    btn_down.on_clicked(floor_down)
 
     if not buildings.empty:
         dorms = buildings[buildings['is_dorm'] == True]
         dorms.plot(ax=ax, color='#a67c52', edgecolor='black', alpha=0.7, label='Dorms')
+
+    dorms_gdf_3857 = gpd.read_file("camine_tuiasi.geojson").to_crs("EPSG:3857")
+    for i, (idx, row) in enumerate(dorms_gdf_3857.iterrows()):
+        if i<22:
+            model.buildings[i].polygon_coords = list(row.geometry.exterior.coords)
+
+    def find_building(x, y):
+        pt = Point(x, y)
+        for i, (idx, row) in enumerate(dorms_gdf_3857.iterrows()):
+            if i>= 22: break
+            if row.geometry.contains(pt) or row.geometry.distance(pt) < 15:
+                return model.buildings[i]
+        return None
 
     edges.plot(ax=ax, color='#bdc3c7', linewidth=0.5, alpha=0.5, zorder=1)
 
@@ -66,16 +124,29 @@ if __name__ == '__main__':
             if agent.is_dead:
                 status = "Dead"
 
-            destinatie = getattr(agent, 'target_name', "None")
+            dest = getattr(agent, 'target_name', "None")
 
             if getattr(agent, 'is_hidden', False):
-                destinatie += " - inside"
+                if agent.current_building and getattr(agent.current_building, 'interior_grid', None):
+                    found_floor = "?"
+                    for floor_idx, f_agents in agent.current_building.interior_grid.floors.items():
+                        if any(a.map_student == agent for a in f_agents):
+                            found_floor = floor_idx
+                            break
+                    dest += f"(Inside - floor {found_floor})"
+                else:
+                    dest += " - inside"
 
             text = (f"Name: {agent.full_name}\n"
                     f"Home Dormitory: {agent.home_dorm}\n"
-                    f"Destination: {destinatie}\n"
-                    f"Status: {status}\n"
-                    f"ID: {agent.unique_id}\n")
+                    f"Destination: {dest}\n"
+                    f"Status: {status}\n")
+            if getattr(agent, 'is_aware', False):
+                if agent.informed_by:
+                    text += f"Alerted by:{agent.informed_by}\n"
+                else:
+                    text += f"Saw fire directly\n"
+            text += f"ID: {agent.unique_id}\n"
             info_panel.set_text(text)
             fig.canvas.draw_idle()
 
@@ -85,10 +156,129 @@ if __name__ == '__main__':
         ax.set_title(f"Simulation - {p_txt} - {f_txt}", fontsize=13, fontweight='bold', pad=10)
         fig.canvas.draw_idle()
 
+    last_drawn_building = None
+    last_drawn_floor = -1
+    inter_norm_scat = None
+    inter_trans_scat = None
+    inter_high_scat = None
+    inter_title_text = None
+
+    def render_interior(building, floor):
+        global selected_agent_id, last_drawn_building, last_drawn_floor, inter_title_text, inter_high_scat, inter_trans_scat, inter_norm_scat
+        if building is None or building.interior_grid is None:
+            ax_inter.cla()
+            ax_btn_down.set_visible(False)
+            ax_btn_up.set_visible(False)
+            ax_inter.text(0.5, 0.5, 'Click on a dormitory', ha='center', va='center', transform=ax_inter.transAxes,
+                          fontsize=9, color='gray')
+            fig.canvas.draw_idle()
+            last_drawn_building = None
+            return
+
+        ig = building.interior_grid
+
+        if building != last_drawn_building or floor != last_drawn_floor:
+            ax_inter.cla()
+            ax_inter.set_axis_off()
+            ax_inter.set_facecolor('#f5f5f0')
+
+            xs = [c[0] for c in building.local_coords]
+            xy = [c[1] for c in building.local_coords]
+            margin = 5
+            ax_inter.set_xlim(min(xs) - margin, max(xs) + margin)
+            ax_inter.set_ylim(min(xy) - margin, max(xy) + margin)
+            ax_inter.set_aspect('equal', adjustable='box')
+            poly_patch = Polygon(building.local_coords, closed=True, edgecolor='#333333', facecolor='#e8dcc8', linewidth=2, zorder=2)
+            ax_inter.add_patch(poly_patch)
+
+            if ig.grid_nodes:
+                ax_inter.scatter([n[0] for n in ig.grid_nodes], [n[1] for n in ig.grid_nodes], s=3, c='#cccccc', zorder=3, alpha=0.5)
+            stairs = ig.get_stair_nodes()
+            if stairs:
+                ax_inter.scatter([s[0] for s in stairs], [s[1] for s in stairs], s=120, c='#e67e22', marker='s', edgecolors='black', linewidth=1, zorder=5)
+                for i, (stx, sty) in enumerate(stairs):
+                    ax_inter.text(stx, sty-3, f'S{"AB"[i]}', ha='center', va = 'center', fontsize=7, color='black', fontweight='bold', zorder=6)
+
+            inter_norm_scat = ax_inter.scatter([], [], s=25, c='#2980b9', edgecolors='white', linewidths=0.5, zorder=6)
+            inter_trans_scat = ax_inter.scatter([], [], s=30, c='#95a5a6', edgecolors='black', linewidths=1, zorder=7, alpha=0.8)
+            inter_high_scat = ax_inter.scatter([], [], c='lime', s=80, edgecolors='white', linewidth=2, zorder=10)
+            inter_title_text = ax_inter.text(0.5, 1.02, "", transform=ax_inter.transAxes, ha='center', va='bottom', fontsize=9, fontweight='bold', bbox=dict(boxstyle='round', fc='white', ec='gray', alpha=0.8))
+            last_drawn_building = building
+            last_drawn_floor = floor
+
+        agents = ig.get_agents_on_floor(floor)
+        if agents:
+            norm_ag = [a for a in agents if not a.in_transit]
+            trans_ag = [a for a in agents if a.in_transit]
+            if norm_ag:
+                inter_norm_scat.set_offsets(np.c_[[a.x for a in norm_ag], [a.y for a in norm_ag]])
+            else:
+                inter_norm_scat.set_offsets(np.empty((0,2)))
+
+            if trans_ag:
+                inter_trans_scat.set_offsets(np.c_[[a.x for a in trans_ag], [a.y for a in trans_ag]])
+            else:
+                inter_trans_scat.set_offsets(np.empty((0,2)))
+
+            high_coords = []
+            if selected_agent_id is not None:
+                for a in agents:
+                    if a.map_student and a.map_student.unique_id == selected_agent_id:
+                        high_coords = [[a.x, a.y]]
+                        break
+
+            if high_coords:
+                inter_high_scat.set_offsets(high_coords)
+            else:
+                inter_high_scat.set_offsets(np.empty((0,2)))
+            inter_title_text.set_text(f"{building.name} - {'Ground Floor' if floor==0 else f'Floor no {floor}'} ({len(agents)} people)")
+
+        else:
+            inter_norm_scat.set_offsets(np.empty((0,2)))
+            inter_trans_scat.set_offsets(np.empty((0,2)))
+            inter_high_scat.set_offsets(np.empty((0,2)))
+            inter_title_text.set_text(f"{building.name} - {'Ground Floor' if floor==0 else f'Floor no {floor}'} (0 people)")
+
+        ax_btn_down.set_visible(True)
+        ax_btn_up.set_visible(True)
+        fig.canvas.draw_idle()
+
     def on_click(event):
+        global selected_building, current_floor, selected_agent_id
+
         if event.inaxes == ax:
+            cx, cy = event.xdata, event.ydata
+            click_pt = Point(cx, cy)
             if is_fire_mode:
-                model.ignite_fire(event.xdata, event.ydata)
+                for i, (idx, row) in enumerate(dorms_gdf_3857.iterrows()):
+                    if row.geometry.contains(click_pt):
+                        return
+                x, y = model.snap_to_nearest_hotspot(event.xdata, event.ydata)
+                model.ignite_fire(x, y)
+            else:
+                b = find_building(event.xdata, event.ydata)
+                if b is not None:
+                    selected_building = b
+                    current_floor = 0
+                    b.init_interior()
+                    render_interior(b, current_floor)
+        elif event.inaxes == ax_inter and selected_building:
+            ig = selected_building.interior_grid
+            if not ig: return
+            cx, cy = event.xdata, event.ydata
+            if cx is None:
+                return
+            agents = ig.get_agents_on_floor(current_floor)
+            best, best_d = None, float('inf')
+            for agent in agents:
+                d = (agent.x-cx)**2 + (agent.y-cy)**2
+                if d < best_d:
+                    best_d = d
+                    best = agent
+            if best and best.map_student and best_d < 100:
+                selected_agent_id = best.map_student.unique_id
+                update_info_display(best.map_student)
+                render_interior(selected_building, current_floor)
 
     def on_key(event):
         global is_paused, is_fire_mode
@@ -118,6 +308,10 @@ if __name__ == '__main__':
 
     def update(frame):
         model.step()
+        if selected_building and selected_building.interior_grid:
+            selected_building.interior_grid.step()
+            render_interior(selected_building, current_floor)
+
         agents, trucks, firefighters = [], [], []
         for a in model.schedule.agents:
             t = type(a).__name__
@@ -125,7 +319,7 @@ if __name__ == '__main__':
                 agents.append(a)
             elif t == 'Firetruck':
                 trucks.append(a)
-            elif t == 'Firefighter':
+            elif t == 'Firefighter' and not getattr(a, 'is_hidden', False):
                 firefighters.append(a)
         if agents:
             offsets = [(a.x, a.y) for a in agents]
@@ -162,7 +356,10 @@ if __name__ == '__main__':
             if target and target.is_active:
                 update_info_display(target)
                 if getattr(target, 'is_hidden', False):
-                    high_scat.set_offsets([(target.x, target.y)])
+                    if target.current_building and getattr(target.current_building, 'interior_grid', None):
+                        high_scat.set_offsets(np.empty((0, 2)))
+                    else:
+                        high_scat.set_offsets([(target.x, target.y)])
                 else:
                     high_scat.set_offsets([(target.x, target.y)])
             else:
@@ -192,7 +389,7 @@ if __name__ == '__main__':
                 names = [a.full_name for a in b_main.inventory[:6]]
                 fire_txt += "\n".join(names) + "\n"
                 if len(b_main.inventory) > 6:
-                    fire_txt += f"...and other {len(b_main.inventory) - 4}\n"
+                    fire_txt += f"...and other {len(b_main.inventory) - 3}\n"
 
             fire_panel.set_text(fire_txt)
             fire_panel.set_visible(True)
@@ -214,14 +411,21 @@ if __name__ == '__main__':
         else:
             truck_scat.set_offsets(np.empty((0, 2)))
 
-        current_y = 0.98
+        cy = 1.0
         if has_alert:
-            alert_panel.set_position((0.05, current_y))
-            current_y -= 0.15
+            alert_panel.set_position((0.0, cy))
+            alert_panel.set_visible(True)
+            cy -= 0.35
+        else:
+            alert_panel.set_visible(False)
+
         if has_fire:
-            fire_panel.set_position((0.05, current_y))
-            current_y -= 0.35
-        menu_text.set_position((0.05, current_y))
+            fire_panel.set_position((0.0, cy))
+            fire_panel.set_visible(True)
+        else:
+            fire_panel.set_visible(False)
+
+        menu_text.set_position((0.05, 0.98))
 
         if firefighters:
             fx = [f.x for f in firefighters]
@@ -243,13 +447,6 @@ if __name__ == '__main__':
     fig.canvas.mpl_connect('key_press_event', on_key)
     fig.canvas.mpl_connect('pick_event', on_pick)
 
-
-    annot = ax.annotate("", xy=(0,0), xytext=(10,10),
-                        textcoords='offset points',
-                        bbox=dict(boxstyle='round', fc='white',
-                        edgecolor='black',alpha=0.8,),
-                        arrowprops=dict(arrowstyle='->'))
-    annot.set_visible(False)
 
     ax.set_axis_off()
     title_text = ax.set_title("Tudor Vladimirescu - Simulation\nRunning - Fire Mode Off", fontsize=13, fontweight='bold', pad=10)
@@ -289,6 +486,5 @@ if __name__ == '__main__':
     except Exception as e:
         pass
 
-    plt.tight_layout()
 
     plt.show()

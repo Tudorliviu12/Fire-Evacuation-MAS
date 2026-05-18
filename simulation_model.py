@@ -383,6 +383,12 @@ class CampusModel(Model):
                 else:
                     still_pending.append((tick, student, sender_name))
             self.pending_alerts = still_pending
+
+        for b in self.buildings:
+            b.evacuate_step()
+            if getattr(b, 'interior_grid', None) is not None:
+                b.interior_grid.step()
+
         self.schedule.step()
 
     def is_near_any_smoke(self, x, y):
@@ -400,9 +406,9 @@ class CampusModel(Model):
         dist = math.sqrt(dx*dx + dy*dy)
         if dist < 0.1:
             return x,y
-        nx = x + (dx/dist)*speed
-        ny = y + (dy/dist)*speed
-        if buildings_shape and buildings_shape.contains(Point(nx, ny)):
+        new_nx = x + (dx/dist)*speed
+        new_ny = y + (dy/dist)*speed
+        if buildings_shape and buildings_shape.contains(Point(new_nx, new_ny)):
             base_angle = math.atan2(dy, dx)
             for i in [0.3, -0.3, 0.6, -0.6, 0.9, -0.9, math.pi/2, -math.pi/2]:
                 alt_angle = base_angle + i
@@ -411,4 +417,4 @@ class CampusModel(Model):
                 if not buildings_shape.contains(Point(alt_x, alt_y)):
                     return alt_x, alt_y
             return x, y
-        return nx, ny
+        return new_nx, new_ny

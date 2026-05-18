@@ -6,7 +6,7 @@ import random
 from faker import Faker
 from pathfinder import DStarLite
 from building import Building
-from config import TRUCK_DELAY_MAX, TRUCK_DELAY_MIN, GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
+from config import NUM_DORMS, TRUCK_DELAY_MAX, TRUCK_DELAY_MIN, GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from simulation_model import CampusModel
@@ -31,7 +31,6 @@ class Student(Agent):
         self.personal_death_threshold = random.uniform(DEATH_THRESHOLD_MIN, DEATH_THRESHOLD_MAX)
         self.target_name = ""
         self.target_node = None
-        self.path = []
         self.edge_waypoints = []
         self.is_hidden = False
         self.waiting_timer = 0
@@ -47,14 +46,14 @@ class Student(Agent):
         self.informed_by = None
         self.alert_cooldown = 0
 
-        if indoors and building_idx is not None and building_idx < 22:
+        if indoors and building_idx is not None and building_idx < NUM_DORMS:
             self.is_resident = True
             self.home_dorm_idx = building_idx
             self.home_dorm = f"T{building_idx + 1}"
         else:
             if random.random() < STUDENT_CHANCE:
                 self.is_resident = True
-                self.home_dorm_idx = random.randint(0, 21)
+                self.home_dorm_idx = random.randint(0, NUM_DORMS-1)
                 self.home_dorm = f"T{self.home_dorm_idx + 1}"
             else:
                 self.is_resident = False
@@ -76,7 +75,7 @@ class Student(Agent):
 
         self.path = []
         self.frames_current = 0
-        self.frames_total = 0
+        self.frames_total = 1
         self.current_building = None
 
         self.dstar = None
@@ -465,6 +464,8 @@ class Student(Agent):
                 self.frames_current = 0
 
         self.frames_current += 1
+        if self.frames_total <= 0:
+            self.frames_total = 1
         fraction = self.frames_current / self.frames_total
 
         if getattr(self, 'is_calling_112', False):
@@ -636,11 +637,15 @@ class Student(Agent):
                 return
             self.pick_safe_destination()
             return
-        if random.random() < GO_TO_DESTINATION_PROB:
+
+        current_building_name = self.current_building.name if getattr(self, 'current_building', None) else ""
+        is_at_home = self.home_dorm_idx is not None and current_building_name == f"Cămin T{self.home_dorm_idx+1}"
+        if is_at_home or random.random() < GO_TO_DESTINATION_PROB:
             valid_indices = [
                 i for i, node in enumerate(self.model.hotspot_nodes)
-                if self.node_is_safe_dest(node)
+                if self.node_is_safe_dest(node) and self.model.hotspot_names[i] != current_building_name
             ]
+
             if not valid_indices:
                 valid_indices = list(range(len(self.model.hotspot_nodes)))
             valid_weights = [self.model.hotspot_weights[i] for i in valid_indices]
@@ -690,11 +695,12 @@ class Student(Agent):
     def step(self):
         if self.is_dead:
             return
-        if not self.is_active or self.is_dead:
+        if not self.is_active:
             if not self.is_active:
                 if self.model.schedule.steps >= self.start_delay:
                     self.is_active = True
-                else: return
+                else:
+                    return
 
         self.check_survival()
 

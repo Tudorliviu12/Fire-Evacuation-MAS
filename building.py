@@ -39,26 +39,19 @@ class Building:
 
     def evacuate_step(self):
         if self.is_on_fire and len(self.inventory) > 0:
-
-            num_to_evacuate = min(len(self.inventory), random.randint(1,3))
-            for _ in range(num_to_evacuate):
-                idx = random.randint(0,len(self.inventory)-1)
-                blob = self.inventory.pop(idx)
-                blob.is_hidden = False
-                offset_x = random.uniform(-0.5, 0.5)
-                offset_y = random.uniform(-0.5, 0.5)
-                blob.x = self.door_coords[0] + offset_x
-                blob.y = self.door_coords[1] + offset_y
-                blob.start_x, blob.start_y = blob.x, blob.y
-                blob.end_x, blob.end_y = blob.x, blob.y
-                blob.become_panicked()
-
-                if self.interior_grid:
-                    for floor_agents in self.interior_grid.floors.values():
-                        for agent in floor_agents:
-                            if agent.map_student is blob:
-                                floor_agents.remove(agent)
-                                break
+            if not self.interior_grid:
+                num_to_evacuate = min(len(self.inventory), random.randint(1,3))
+                for _ in range(num_to_evacuate):
+                    idx = random.randint(0,len(self.inventory)-1)
+                    blob = self.inventory.pop(idx)
+                    blob.is_hidden = False
+                    offset_x = random.uniform(-0.5, 0.5)
+                    offset_y = random.uniform(-0.5, 0.5)
+                    blob.x = self.door_coords[0] + offset_x
+                    blob.y = self.door_coords[1] + offset_y
+                    blob.start_x, blob.start_y = blob.x, blob.y
+                    blob.end_x, blob.end_y = blob.x, blob.y
+                    blob.become_panicked()
 
     def accept_student(self, student):
         if student not in self.inventory:

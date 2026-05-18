@@ -3,6 +3,7 @@ import networkx as nx
 import osmnx as ox
 import math
 import random
+from faker import Faker
 from shapely.geometry import Point
 from typing import TYPE_CHECKING
 from config import FIREFIGHTER_STANDOFF, MIN_FIREFIGHTER_DIST, WATER_SPREAD_ANGLE, WATER_PARTICLES_PER_FRAME, WATER_PARTICLE_SPEED, WATER_EXTINGUISH_POWER, FIREFIGHTER_RETREAT_DIST, FIREFIGHTER_ADVANCE_DIST
@@ -10,9 +11,12 @@ from pathfinder import DStarLite
 if TYPE_CHECKING:
     from simulation_model import CampusModel
 
+fake = Faker('ro_RO')
+
 class Firefighter(Agent):
     def __init__(self, unique_id, model: 'CampusModel', start_x, start_y, angle_offset=0.0, truck=None):
         super().__init__(unique_id, model)
+        self.full_name = f"Firefighter {fake.last_name()}"
         self.model: 'CampusModel' = model
         self.x = start_x + random.uniform(-1.0, 1.0)
         self.y = start_y + random.uniform(-1.0, 1.0)
@@ -29,7 +33,6 @@ class Firefighter(Agent):
         self.is_active = True
         self.is_panicked = False
         self.is_dead = False
-        self.is_walking_path = True
         self.is_returning = False
         self.stuck_timer = 0
         self.stuck_last_x = self.x
@@ -53,6 +56,7 @@ class Firefighter(Agent):
         self.tunnel_dy = 0.0
         self.tunnel_cooldown = 0
         self.pos_history = []
+        self.spawn_cooldown = 30
 
         self.compute_standoff_post()
         self.init_path_to_post()
@@ -116,6 +120,8 @@ class Firefighter(Agent):
         for agent in self.model.active_agents_cache:
             if agent is self:
                 continue
+            if agent is self.truck:
+                continue
             if type(agent).__name__ in ('Firefighter', 'Firetruck'):
                 if (x-agent.x)**2 + (y-agent.y)**2 <= MIN_FIREFIGHTER_DIST**2:
                     return True
@@ -131,76 +137,9 @@ class Firefighter(Agent):
                 self.frames_total = 1
                 self.start_x, self.start_y = self.x, self.y
                 self.end_x, self.end_y = self.x, self.y
-            self.is_returning = True
-            tx, ty = self.truck.x, self.truck.y
-            dx = tx - self.x
-            dy = ty - self.y
-            dist = math.sqrt(dx*dx + dy*dy)
-            if dist <= 2.0:
-                self.truck.firefighter_boarded(self)
-                self.is_active = False
-                if self in self.model.schedule.agents:
-                    self.model.schedule.remove(self)
-                return
-            if not self.path and not self.edge_waypoints:
-                try:
-                    start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-                    end_n = ox.distance.nearest_nodes(self.model.G_all, tx, ty)
-                    self.path = nx.shortest_path(self.model.G_all, start_n, end_n, weight='length')[1:]
-                    self.dstar = None
-                    self.edge_waypoints = []
-                except Exception:
-                    self.path = []
-
-            if self.frames_current >= self.frames_total:
-                if self.edge_waypoints:
-                    next_pt = self.edge_waypoints.pop(0)
-                    self.start_x, self.start_y = self.x, self.y
-                    self.end_x, self.end_y = next_pt
-                    dist_seg = math.sqrt((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)
-                    self.frames_total = max(1, int(dist_seg / (self.base_speed * 1.5)))
-                    self.frames_current = 0
-                elif self.path:
-                    next_node = self.path.pop(0)
-                    self.edge_waypoints = []
-                    try:
-                        curr_node = self.path[0] if self.path else next_node
-                        edge_data = self.model.G_all.get_edge_data(curr_node, next_node) or self.model.G_all.get_edge_data(next_node, curr_node)
-                        if edge_data is not None:
-                            key = list(edge_data.keys())[0]
-                            data = edge_data[key]
-                            if 'geometry' in data:
-                                coords = list(data['geometry'].coords)
-                                d_first = math.sqrt((self.x - coords[0][0])**2 + (self.y - coords[0][1])**2)
-                                d_last = math.sqrt((self.x - coords[-1][0])**2 + (self.y - coords[-1][1])**2)
-                                if d_last < d_first:
-                                    coords.reverse()
-                                self.edge_waypoints = coords[1:]
-                    except Exception:
-                        pass
-                    if self.edge_waypoints:
-                        next_pt = self.edge_waypoints.pop(0)
-                        self.start_x, self.start_y = self.x, self.y
-                        self.end_x, self.end_y = next_pt
-                    else:
-                        node_data = self.model.nodes_proj.loc[next_node]
-                        self.start_x, self.start_y = self.x, self.y
-                        self.end_x, self.end_y = node_data.geometry.x, node_data.geometry.y
-                    dist_seg = math.sqrt((self.end_x - self.start_x)**2 + (self.end_y - self.start_y)**2)
-                    self.frames_total = max(1, int(dist_seg / (self.base_speed * 1.5)))
-                    self.frames_current = 0
-                else:
-                    self.x, self.y = self.model.move_avoid_buildings(
-                        self.x, self.y, tx, ty, self.base_speed * 1.5, self.model.buildings_shape
-                    )
-                    return
-
-            self.frames_current += 1
-            fraction = self.frames_current / self.frames_total
-            self.x = self.start_x + fraction * (self.end_x - self.start_x)
-            self.y = self.start_y + fraction * (self.end_y - self.start_y)
+                self.is_returning = True
+            self.return_to_truck()
             return
-
 
         dist_to_fire = math.sqrt((self.x - self.model.fire_center_x) ** 2 + (self.y - self.model.fire_center_y) ** 2)
 
@@ -229,10 +168,19 @@ class Firefighter(Agent):
             self.has_arrived = True
             return
 
-        self.x, self.y = self.model.move_avoid_buildings(
+        next_x, next_y = self.model.move_avoid_buildings(
             self.x, self.y, self.target_x, self.target_y,
             self.current_speed, self.model.buildings_shape
         )
+        if self.spawn_cooldown > 0:
+            self.spawn_cooldown -= 1
+            self.x, self.y = next_x, next_y
+        else:
+            if not self.is_too_close(next_x, next_y):
+                self.x, self.y = next_x, next_y
+
+        if not self.is_too_close(next_x, next_y):
+            self.x, self.y = next_x, next_y
 
         if not hasattr(self, 'pos_history'):
             self.pos_history = []
@@ -272,11 +220,33 @@ class Firefighter(Agent):
         tx, ty = self.truck.x, self.truck.y
         dx = tx - self.x
         dy = ty - self.y
-        dist = math.sqrt(dx*dx + dy*dy)
+        dist = math.sqrt(dx * dx + dy * dy)
         if dist <= 2.0:
             self.truck.firefighter_boarded(self)
             self.is_active = False
             self.model.schedule.remove(self)
+            return
+
+        if not self.path:
+            try:
+                start_n = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
+                end_n = ox.distance.nearest_nodes(self.model.G_all, tx, ty)
+                self.path = nx.shortest_path(self.model.G_all, start_n, end_n, weight='length')[1:]
+            except Exception:
+                self.path = []
+
+        if self.path:
+            next_node = self.path[0]
+            node_data = self.model.nodes_proj.loc[next_node]
+            nx_, ny_ = node_data.geometry.x, node_data.geometry.y
+            dist_to_node = math.sqrt((nx_ - self.x) ** 2 + (ny_ - self.y) ** 2)
+            if dist_to_node < 1.5:
+                self.path.pop(0)
+            else:
+                speed = self.base_speed * 1.5
+                self.x, self.y = self.model.move_avoid_buildings(
+                    self.x, self.y, nx_, ny_, speed, self.model.buildings_shape
+                )
         else:
             speed = self.base_speed * 1.5
             self.x, self.y = self.model.move_avoid_buildings(

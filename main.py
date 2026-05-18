@@ -2,16 +2,16 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.gridspec as gridspec
 import random
-import geopandas as gpd
 import numpy as np
 import contextily as ctx
 from matplotlib.patches import Polygon
 from matplotlib.lines import Line2D
 from matplotlib.widgets import Button
+from matplotlib.patches import Polygon
 from map_loader import *
-from shapely.geometry import Point
+from shapely.geometry import Point, Polygon as ShapelyPolygon
 from simulation_model import CampusModel
-from config import TARGET_POPULATION_MIN, TARGET_POPULATION_MAX, SMOKE_LIFESPAN
+from config import NUM_DORMS, TARGET_POPULATION_MIN, TARGET_POPULATION_MAX, SMOKE_LIFESPAN
 
 if __name__ == '__main__':
 
@@ -82,13 +82,14 @@ if __name__ == '__main__':
 
     dorms_gdf_3857 = gpd.read_file("camine_tuiasi.geojson").to_crs("EPSG:3857")
     for i, (idx, row) in enumerate(dorms_gdf_3857.iterrows()):
-        if i<22:
+        if i<NUM_DORMS:
             model.buildings[i].polygon_coords = list(row.geometry.exterior.coords)
 
     def find_building(x, y):
         pt = Point(x, y)
         for i, (idx, row) in enumerate(dorms_gdf_3857.iterrows()):
-            if i>= 22: break
+            if i>= NUM_DORMS:
+                break
             if row.geometry.contains(pt) or row.geometry.distance(pt) < 15:
                 return model.buildings[i]
         return None
@@ -110,7 +111,7 @@ if __name__ == '__main__':
     selected_agent_id = None
     high_scat = ax.scatter([],[],c='lime', s=80, edgecolors='white', linewidth=2, zorder=11)
     truck_scat = ax.scatter([], [], c='yellow', s=80, marker='s', edgecolors='black', linewidth=2, zorder=12, label='Firetruck')
-    ff_scat = ax.scatter([], [], c='brown', s=40, marker='o', edgecolors='black', linewidth=1.5, zorder=13, label='Firefighter')
+    ff_scat = ax.scatter([], [], c='brown', s=40, marker='o', edgecolors='black', linewidth=1.5, zorder=13, label='Firefighter', picker=5)
     water_scat = ax.scatter([], [], c='cyan', s=8, alpha=0.7, edgecolors='black', zorder=14, label='Water')
 
     info_panel = ax.text(0.80, 0.95, "", transform=ax.transAxes,
@@ -119,36 +120,67 @@ if __name__ == '__main__':
                          bbox=dict(boxstyle='round',pad=0.5, facecolor='white', edgecolor='black', alpha=0.9), zorder=999)
 
     def update_info_display(agent):
-        if agent:
-            status = "Panicked" if agent.is_panicked else "Calm"
-            if agent.is_dead:
-                status = "Dead"
+        if agent is None:
+            info_panel.set_text("")
+            fig.canvas.draw_idle()
+            return
 
-            dest = getattr(agent, 'target_name', "None")
+        if type(agent).__name__ == 'Firefighter':
+            if not agent.model.fire_started or getattr(agent, 'is_returning', False):
+                mission = "Return to truck"
+            else:
+                mission = "Extinguish fire"
 
-            if getattr(agent, 'is_hidden', False):
-                if agent.current_building and getattr(agent.current_building, 'interior_grid', None):
-                    found_floor = "?"
-                    for floor_idx, f_agents in agent.current_building.interior_grid.floors.items():
-                        if any(a.map_student == agent for a in f_agents):
-                            found_floor = floor_idx
-                            break
-                    dest += f"(Inside - floor {found_floor})"
-                else:
-                    dest += " - inside"
+            truck_id = agent.truck.unique_id if getattr(agent, 'truck', None) else "N/A"
+            name = getattr(agent, 'full_name', f"Firefighter #{agent.unique_id}")
 
-            text = (f"Name: {agent.full_name}\n"
-                    f"Home Dormitory: {agent.home_dorm}\n"
-                    f"Destination: {dest}\n"
-                    f"Status: {status}\n")
-            if getattr(agent, 'is_aware', False):
-                if agent.informed_by:
-                    text += f"Alerted by:{agent.informed_by}\n"
-                else:
-                    text += f"Saw fire directly\n"
-            text += f"ID: {agent.unique_id}\n"
+            text = (f"{name}\n"
+                    f"Mission: {mission}\n"
+                    f"Truck ID: {truck_id}\n")
+
             info_panel.set_text(text)
             fig.canvas.draw_idle()
+            return
+
+
+        status = "Panicked" if agent.is_panicked else "Calm"
+        if agent.is_dead:
+            status = "Dead"
+
+        dest = getattr(agent, 'target_name', "None")
+
+        if getattr(agent, 'is_hidden', False):
+            if agent.current_building and getattr(agent.current_building, 'interior_grid', None):
+                interior_agent = None
+                for floor_idx, f_agents in agent.current_building.interior_grid.floors.items():
+                    for a in f_agents:
+                        if a.map_student == agent:
+                            interior_agent = a
+                            break
+                    if interior_agent: break
+                if interior_agent:
+                    if interior_agent.is_exiting:
+                        pass
+                    else:
+                        dest = f"{agent.current_building.name} (floor {interior_agent.target_floor})"
+            else:
+                dest += " (inside)"
+        else:
+            if "Cămin" in dest and getattr(agent, 'target_floor', None) is not None:
+                dest += f" (floor {agent.target_floor})"
+
+        text = (f"Name: {agent.full_name}\n"
+                f"Home Dormitory: {agent.home_dorm}\n"
+                f"Destination: {dest}\n"
+                f"Status: {status}\n")
+        if getattr(agent, 'is_aware', False):
+            if agent.informed_by:
+                text += f"Alerted by:{agent.informed_by}\n"
+            else:
+                text += f"Saw fire directly\n"
+        text += f"ID: {agent.unique_id}\n"
+        info_panel.set_text(text)
+        fig.canvas.draw_idle()
 
     def update_status_title():
         p_txt = "Paused" if is_paused else "Running"
@@ -162,25 +194,26 @@ if __name__ == '__main__':
     inter_trans_scat = None
     inter_high_scat = None
     inter_title_text = None
+    fire_glow_inter = None
+    fire_core_inter = None
 
     def render_interior(building, floor):
-        global selected_agent_id, last_drawn_building, last_drawn_floor, inter_title_text, inter_high_scat, inter_trans_scat, inter_norm_scat
-        if building is None or building.interior_grid is None:
+        global fire_core_inter, fire_glow_inter, selected_agent_id, last_drawn_building, last_drawn_floor, inter_title_text, inter_high_scat, inter_trans_scat, inter_norm_scat
+        if building is None or getattr(building, 'interior_grid', None) is None:
             ax_inter.cla()
             ax_btn_down.set_visible(False)
             ax_btn_up.set_visible(False)
-            ax_inter.text(0.5, 0.5, 'Click on a dormitory', ha='center', va='center', transform=ax_inter.transAxes,
-                          fontsize=9, color='gray')
+            ax_inter.text(0.5, 0.5, 'Click on a dormitory', ha='center', va='center', transform=ax_inter.transAxes, fontsize=9, color='gray')
             fig.canvas.draw_idle()
             last_drawn_building = None
             return
 
         ig = building.interior_grid
 
-        if building != last_drawn_building or floor != last_drawn_floor:
+        if building != last_drawn_building:
             ax_inter.cla()
             ax_inter.set_axis_off()
-            ax_inter.set_facecolor('#f5f5f0')
+            ax_inter.set_facecolor('#e8e0d0')
 
             xs = [c[0] for c in building.local_coords]
             xy = [c[1] for c in building.local_coords]
@@ -191,34 +224,48 @@ if __name__ == '__main__':
             poly_patch = Polygon(building.local_coords, closed=True, edgecolor='#333333', facecolor='#e8dcc8', linewidth=2, zorder=2)
             ax_inter.add_patch(poly_patch)
 
-            if ig.grid_nodes:
-                ax_inter.scatter([n[0] for n in ig.grid_nodes], [n[1] for n in ig.grid_nodes], s=3, c='#cccccc', zorder=3, alpha=0.5)
             stairs = ig.get_stair_nodes()
             if stairs:
                 ax_inter.scatter([s[0] for s in stairs], [s[1] for s in stairs], s=120, c='#e67e22', marker='s', edgecolors='black', linewidth=1, zorder=5)
-                for i, (stx, sty) in enumerate(stairs):
-                    ax_inter.text(stx, sty-3, f'S{"AB"[i]}', ha='center', va = 'center', fontsize=7, color='black', fontweight='bold', zorder=6)
 
+            fire_glow_inter = ax_inter.scatter([], [], c='red', alpha=0.25, edgecolors='none', zorder=4)
+            fire_core_inter = ax_inter.scatter([], [], c='orange', alpha=0.9, edgecolors='none', zorder=5)
             inter_norm_scat = ax_inter.scatter([], [], s=25, c='#2980b9', edgecolors='white', linewidths=0.5, zorder=6)
             inter_trans_scat = ax_inter.scatter([], [], s=30, c='#95a5a6', edgecolors='black', linewidths=1, zorder=7, alpha=0.8)
             inter_high_scat = ax_inter.scatter([], [], c='lime', s=80, edgecolors='white', linewidth=2, zorder=10)
             inter_title_text = ax_inter.text(0.5, 1.02, "", transform=ax_inter.transAxes, ha='center', va='bottom', fontsize=9, fontweight='bold', bbox=dict(boxstyle='round', fc='white', ec='gray', alpha=0.8))
             last_drawn_building = building
-            last_drawn_floor = floor
+        last_drawn_floor = floor
 
         agents = ig.get_agents_on_floor(floor)
+
+        floor_blobs = [b for b in getattr(ig, 'fire_blobs', []) if b['floor'] == floor]
+        if floor_blobs:
+            coords = np.c_[[b['x'] for b in floor_blobs], [b['y'] for b in floor_blobs]]
+            sizes_glow = np.random.uniform(25, 55, len(floor_blobs))
+            sizes_core = np.full(len(floor_blobs), 15)
+            fire_glow_inter.set_offsets(coords)
+            fire_glow_inter.set_sizes(sizes_glow)
+            fire_core_inter.set_offsets(coords)
+            fire_core_inter.set_sizes(sizes_core)
+        else:
+            fire_glow_inter.set_offsets(np.empty((0, 2)))
+            fire_core_inter.set_offsets(np.empty((0, 2)))
+
         if agents:
             norm_ag = [a for a in agents if not a.in_transit]
             trans_ag = [a for a in agents if a.in_transit]
             if norm_ag:
                 inter_norm_scat.set_offsets(np.c_[[a.x for a in norm_ag], [a.y for a in norm_ag]])
+                inter_norm_scat.set_color(['red' if a.map_student and a.map_student.is_panicked else '#2980b9' for a in norm_ag])
             else:
-                inter_norm_scat.set_offsets(np.empty((0,2)))
+                inter_norm_scat.set_offsets(np.empty((0, 2)))
 
             if trans_ag:
                 inter_trans_scat.set_offsets(np.c_[[a.x for a in trans_ag], [a.y for a in trans_ag]])
+                inter_trans_scat.set_color(['darkred' if a.map_student and a.map_student.is_panicked else '#95a5a6' for a in trans_ag])
             else:
-                inter_trans_scat.set_offsets(np.empty((0,2)))
+                inter_trans_scat.set_offsets(np.empty((0, 2)))
 
             high_coords = []
             if selected_agent_id is not None:
@@ -231,7 +278,8 @@ if __name__ == '__main__':
                 inter_high_scat.set_offsets(high_coords)
             else:
                 inter_high_scat.set_offsets(np.empty((0,2)))
-            inter_title_text.set_text(f"{building.name} - {'Ground Floor' if floor==0 else f'Floor no {floor}'} ({len(agents)} people)")
+            panicked = sum(1 for a in agents if a.map_student and a.map_student.is_panicked)
+            inter_title_text.set_text(f"{building.name} - {'Ground Floor' if floor==0 else f'Floor no {floor}'} ({len(agents)} people, {panicked} panicked)")
 
         else:
             inter_norm_scat.set_offsets(np.empty((0,2)))
@@ -244,30 +292,52 @@ if __name__ == '__main__':
         fig.canvas.draw_idle()
 
     def on_click(event):
-        global selected_building, current_floor, selected_agent_id
+        global selected_building, current_floor, selected_agent_id, last_drawn_floor
 
         if event.inaxes == ax:
             cx, cy = event.xdata, event.ydata
             click_pt = Point(cx, cy)
+
             if is_fire_mode:
-                for i, (idx, row) in enumerate(dorms_gdf_3857.iterrows()):
-                    if row.geometry.contains(click_pt):
+                if getattr(model, 'fire_ever_started', False):
+                    return
+                for b in model.buildings:
+                    if getattr(b, 'polygon_coords', None) and ShapelyPolygon(b.polygon_coords).contains(click_pt):
                         return
                 x, y = model.snap_to_nearest_hotspot(event.xdata, event.ydata)
                 model.ignite_fire(x, y)
+                model.fire_ever_started = True
             else:
                 b = find_building(event.xdata, event.ydata)
                 if b is not None:
+                    building_on_fire = None
+                    for build in model.buildings:
+                        if build.interior_grid and hasattr(build.interior_grid, 'fire_floors') and build.interior_grid.fire_floors:
+                            building_on_fire = build
+                            break
+                    if building_on_fire is not None and b!=building_on_fire:
+                        return
+
                     selected_building = b
                     current_floor = 0
                     b.init_interior()
                     render_interior(b, current_floor)
+
         elif event.inaxes == ax_inter and selected_building:
             ig = selected_building.interior_grid
-            if not ig: return
+            if not ig:
+                return
             cx, cy = event.xdata, event.ydata
             if cx is None:
                 return
+            if is_fire_mode:
+                if not getattr(model, 'fire_ever_started', False):
+                    ig.set_fire_on_floor(current_floor, cx, cy)
+                    model.fire_ever_started = True
+                    last_drawn_floor = -1
+                    render_interior(selected_building, current_floor)
+                    return
+
             agents = ig.get_agents_on_floor(current_floor)
             best, best_d = None, float('inf')
             for agent in agents:
@@ -297,14 +367,24 @@ if __name__ == '__main__':
     def on_pick(event):
         global selected_agent_id
         index = event.ind[0]
-        all_agents = [a for a in model.schedule.agents if type(a).__name__ == 'Student' and getattr(a, 'is_active', False) and not getattr(a, 'is_hidden', False)]
 
-        if index<len(all_agents):
-            agent = all_agents[index]
-            selected_agent_id = agent.unique_id
-            update_info_display(agent)
-            high_scat.set_offsets([(agent.x, agent.y)])
-            fig.canvas.draw_idle()
+        if event.artist == scat:
+            all_agents = [a for a in model.schedule.agents if type(a).__name__ == 'Student' and getattr(a, 'is_active', False) and not getattr(a, 'is_hidden', False)]
+            if index<len(all_agents):
+                agent = all_agents[index]
+                selected_agent_id = agent.unique_id
+                update_info_display(agent)
+                high_scat.set_offsets([(agent.x, agent.y)])
+                fig.canvas.draw_idle()
+
+        elif event.artist == ff_scat:
+            all_firefighters = [a for a in model.schedule.agents if type(a).__name__ == 'Firefighter' and not getattr(a, 'is_hidden', False)]
+            if index < len(all_firefighters):
+                agent = all_firefighters[index]
+                selected_agent_id = agent.unique_id
+                update_info_display(agent)
+                high_scat.set_offsets([(agent.x, agent.y)])
+                fig.canvas.draw_idle()
 
     def update(frame):
         model.step()
@@ -352,25 +432,31 @@ if __name__ == '__main__':
             smoke_scatter.set_offsets(np.empty((0, 2)))
 
         if selected_agent_id is not None:
-            target = next((a for a in model.schedule.agents if a.unique_id == selected_agent_id), None)
-            if target and target.is_active:
-                update_info_display(target)
-                if getattr(target, 'is_hidden', False):
-                    if target.current_building and getattr(target.current_building, 'interior_grid', None):
-                        high_scat.set_offsets(np.empty((0, 2)))
-                    else:
-                        high_scat.set_offsets([(target.x, target.y)])
+            selected_ag = None
+            for a in model.schedule.agents:
+                if getattr(a, 'unique_id', None) == selected_agent_id:
+                    selected_ag = a
+                    break
+
+            if selected_ag:
+                update_info_display(selected_ag)
+
+                if not getattr(selected_ag, 'is_hidden', False):
+                    high_scat.set_offsets(np.c_[[selected_ag.x], [selected_ag.y]])
                 else:
-                    high_scat.set_offsets([(target.x, target.y)])
+                    high_scat.set_offsets(np.empty((0, 2)))
             else:
                 high_scat.set_offsets(np.empty((0, 2)))
                 info_panel.set_text("")
+        else:
+            high_scat.set_offsets(np.empty((0, 2)))
 
         sorted_buildings = sorted(model.buildings, key=lambda x:len(x.inventory), reverse=True)
         status_txt = "Campus Status:\n"
         for b in sorted_buildings[:12]:
             if len(b.inventory) > 0:
-                status_txt += f"- {b.name}: {len(b.inventory)} people\n"
+                panicked = sum(1 for s in b.inventory if getattr(s, 'is_panicked', False))
+                status_txt += f"- {b.name}: {len(b.inventory)} people ({panicked} panicked\n"
         menu_text.set_text(status_txt)
         menu_text.set_bbox(dict(boxstyle='round', facecolor='#e6f2ff', edgecolor='gray', alpha=0.9))
 
@@ -379,9 +465,10 @@ if __name__ == '__main__':
         if has_fire:
             fire_txt = f"FIRE DETECTED! Radius: {model.current_fire_radius:.1f}m\n\n"
             for b in burning_buildings[:3]:
-                fire_txt += f"Fire at {b.name}\n ({len(b.inventory)} people inside)\n"
+                panicked = sum(1 for s in b.inventory if getattr(s, 'is_panicked', False))
+                fire_txt += f"Fire at {b.name}\n ({len(b.inventory)} people inside {panicked} panicked)\n"
             if len(burning_buildings) > 3:
-                fire_txt += f"...and other {len(burning_buildings)} burning buildings\n"
+                fire_txt += f"...and other {len(burning_buildings) - 3} burning buildings\n"
 
             b_main = burning_buildings[0]
             if len(b_main.inventory) > 0:
@@ -389,7 +476,7 @@ if __name__ == '__main__':
                 names = [a.full_name for a in b_main.inventory[:6]]
                 fire_txt += "\n".join(names) + "\n"
                 if len(b_main.inventory) > 6:
-                    fire_txt += f"...and other {len(b_main.inventory) - 3}\n"
+                    fire_txt += f"...and other {len(b_main.inventory) - 6}\n"
 
             fire_panel.set_text(fire_txt)
             fire_panel.set_visible(True)
@@ -397,12 +484,6 @@ if __name__ == '__main__':
             fire_panel.set_visible(False)
 
         has_alert = getattr(model, 'alarm_triggered', False) and not getattr(model, 'truck_dispatched', False)
-        if has_alert:
-            alert_msg = f"112 Emergency!\nReported by: {model.hero_name}\nISU arriving in {model.truck_timer} frames\n"
-            alert_panel.set_text(alert_msg)
-            alert_panel.set_visible(True)
-        else:
-            alert_panel.set_visible(False)
 
         if trucks:
             tx = [t.x for t in trucks]
@@ -413,6 +494,8 @@ if __name__ == '__main__':
 
         cy = 1.0
         if has_alert:
+            alert_panel.set_text(
+                f"112 Emergency!\nReported by: {model.hero_name}\nISU arriving in {model.truck_timer} frames\n")
             alert_panel.set_position((0.0, cy))
             alert_panel.set_visible(True)
             cy -= 0.35

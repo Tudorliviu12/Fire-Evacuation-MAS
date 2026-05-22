@@ -43,12 +43,12 @@ if __name__ == '__main__':
 
     ax_alerts = fig.add_axes([0.02, 0.75, 0.2, 0.22])
     ax_alerts.set_axis_off()
-    alert_panel = ax_alerts.text(
-        0.0, 1.0, "", transform=ax_alerts.transAxes, va='top', fontsize=9, fontweight='bold', bbox=dict(boxstyle='round, pad=0.3', fc='#ff4d4d', ec='black', alpha=0.9), zorder=998)
+    alert_panel = ax_alerts.text(0.0, 1.0, "", transform=ax_alerts.transAxes, va='top', fontsize=9, fontweight='bold', bbox=dict(boxstyle='round, pad=0.3', fc='#ff4d4d', ec='black', alpha=0.9), zorder=998)
     alert_panel.set_visible(False)
-    fire_panel = ax_alerts.text(
-        0.0, 1.0, "", transform=ax_alerts.transAxes, va='top', fontsize=8, fontweight='bold',
-        bbox=dict(boxstyle='round, pad=0.3', fc='#ffcccc', ec='black', alpha=0.9), zorder=998)
+    fire_panel = ax_alerts.text(0.0, 1.0, "", transform=ax_alerts.transAxes, va='top', fontsize=8, fontweight='bold', bbox=dict(boxstyle='round, pad=0.3', fc='#ffcccc', ec='black', alpha=0.9), zorder=998)
+
+    bottleneck_panel = ax_alerts.text(0.0, -0.9, "", transform=ax_alerts.transAxes, va='top', fontsize=8, bbox=dict(boxstyle='round, pad=0.3', fc='#f0f0f0', ec='gray', alpha=0.9), zorder=998)
+    bottleneck_panel.set_visible(False)
 
     menu_text = ax_info.text(0.05, 0.98, "", transform=ax_info.transAxes, va='top', fontsize=8, bbox=dict(boxstyle='round, pad=0.3', fc='#e6f2ff', ec='gray', alpha=0.9))
 
@@ -174,8 +174,10 @@ if __name__ == '__main__':
                 f"Destination: {dest}\n"
                 f"Status: {status}\n")
         if getattr(agent, 'is_aware', False):
-            if agent.informed_by:
-                text += f"Alerted by:{agent.informed_by}\n"
+            if getattr(agent, 'informed_by', None) == "Fire Alarm":
+                text += "Heard Fire Alarm\n"
+            elif getattr(agent, 'informed_by', None):
+                text += f"Alerted by: {agent.informed_by}\n"
             else:
                 text += f"Saw fire directly\n"
         text += f"ID: {agent.unique_id}\n"
@@ -196,9 +198,11 @@ if __name__ == '__main__':
     inter_title_text = None
     fire_glow_inter = None
     fire_core_inter = None
+    inter_ff_scat = None
+    inter_water_scat = None
 
     def render_interior(building, floor):
-        global fire_core_inter, fire_glow_inter, selected_agent_id, last_drawn_building, last_drawn_floor, inter_title_text, inter_high_scat, inter_trans_scat, inter_norm_scat
+        global inter_water_scat, inter_ff_scat, interior_alarm_panel, fire_core_inter, fire_glow_inter, selected_agent_id, last_drawn_building, last_drawn_floor, inter_title_text, inter_high_scat, inter_trans_scat, inter_norm_scat
         if building is None or getattr(building, 'interior_grid', None) is None:
             ax_inter.cla()
             ax_btn_down.set_visible(False)
@@ -209,18 +213,15 @@ if __name__ == '__main__':
             return
 
         ig = building.interior_grid
+        xs = [c[0] for c in building.local_coords]
+        xy = [c[1] for c in building.local_coords]
+        margin = 5
 
         if building != last_drawn_building:
             ax_inter.cla()
             ax_inter.set_axis_off()
             ax_inter.set_facecolor('#e8e0d0')
 
-            xs = [c[0] for c in building.local_coords]
-            xy = [c[1] for c in building.local_coords]
-            margin = 5
-            ax_inter.set_xlim(min(xs) - margin, max(xs) + margin)
-            ax_inter.set_ylim(min(xy) - margin, max(xy) + margin)
-            ax_inter.set_aspect('equal', adjustable='box')
             poly_patch = Polygon(building.local_coords, closed=True, edgecolor='#333333', facecolor='#e8dcc8', linewidth=2, zorder=2)
             ax_inter.add_patch(poly_patch)
 
@@ -234,10 +235,20 @@ if __name__ == '__main__':
             inter_trans_scat = ax_inter.scatter([], [], s=30, c='#95a5a6', edgecolors='black', linewidths=1, zorder=7, alpha=0.8)
             inter_high_scat = ax_inter.scatter([], [], c='lime', s=80, edgecolors='white', linewidth=2, zorder=10)
             inter_title_text = ax_inter.text(0.5, 1.02, "", transform=ax_inter.transAxes, ha='center', va='bottom', fontsize=9, fontweight='bold', bbox=dict(boxstyle='round', fc='white', ec='gray', alpha=0.8))
+
+            interior_alarm_panel = ax_inter.text(0.5, 0.9, "", transform=ax_inter.transAxes, ha='center', va='top', fontsize=11, fontweight='bold', color='white', bbox=dict(boxstyle='round', fc='red', ec='black', alpha=0.9), zorder=999)
+            interior_alarm_panel.set_visible(False)
+
+            inter_ff_scat = ax_inter.scatter([], [], s=40, c='brown', edgecolors='black', linewidths=1.5, marker='o', zorder=12)
+            inter_water_scat = ax_inter.scatter([], [], s=8, c='#3498db', edgecolors='none', alpha=0.7, zorder=11)
+            ax_inter.set_xlim(min(xs) - margin, max(xs) + margin)
+            ax_inter.set_ylim(min(xy) - margin, max(xy) + margin)
+            ax_inter.set_aspect('equal', adjustable='box')
             last_drawn_building = building
+
         last_drawn_floor = floor
 
-        agents = ig.get_agents_on_floor(floor)
+        agents = [a for a in ig.get_agents_on_floor(floor) if a.map_student is not None]
 
         floor_blobs = [b for b in getattr(ig, 'fire_blobs', []) if b['floor'] == floor]
         if floor_blobs:
@@ -257,13 +268,22 @@ if __name__ == '__main__':
             trans_ag = [a for a in agents if a.in_transit]
             if norm_ag:
                 inter_norm_scat.set_offsets(np.c_[[a.x for a in norm_ag], [a.y for a in norm_ag]])
-                inter_norm_scat.set_color(['red' if a.map_student and a.map_student.is_panicked else '#2980b9' for a in norm_ag])
+                colors = []
+                for a in norm_ag:
+                    if getattr(a.map_student, 'is_dead', False):
+                        colors.append('black')
+                    elif getattr(a, 'is_aware_of_fire', False):
+                        colors.append('red')
+                    else:
+                        colors.append('#2980b9')
+                inter_norm_scat.set_color(colors)
             else:
                 inter_norm_scat.set_offsets(np.empty((0, 2)))
 
             if trans_ag:
                 inter_trans_scat.set_offsets(np.c_[[a.x for a in trans_ag], [a.y for a in trans_ag]])
-                inter_trans_scat.set_color(['darkred' if a.map_student and a.map_student.is_panicked else '#95a5a6' for a in trans_ag])
+                inter_trans_scat.set_color(['#bdc3c7' for _ in trans_ag])
+                inter_trans_scat.set_alpha(0.6)
             else:
                 inter_trans_scat.set_offsets(np.empty((0, 2)))
 
@@ -274,12 +294,20 @@ if __name__ == '__main__':
                         high_coords = [[a.x, a.y]]
                         break
 
+            if not high_coords and selected_agent_id is not None:
+                for a in ig.get_agents_on_floor(floor):
+                    if getattr(a, 'is_firefighter', False):
+                        ff_ref = getattr(a, 'firefighter_ref', None)
+                        if ff_ref and getattr(ff_ref, 'unique_id', None) == selected_agent_id:
+                            high_coords = [[a.x, a.y]]
+                            break
+
             if high_coords:
                 inter_high_scat.set_offsets(high_coords)
             else:
                 inter_high_scat.set_offsets(np.empty((0,2)))
-            panicked = sum(1 for a in agents if a.map_student and a.map_student.is_panicked)
-            inter_title_text.set_text(f"{building.name} - {'Ground Floor' if floor==0 else f'Floor no {floor}'} ({len(agents)} people, {panicked} panicked)")
+
+            inter_title_text.set_text(f"{building.name} - {'Ground Floor' if floor==0 else f'Floor no {floor}'} ({len(agents)} people)")
 
         else:
             inter_norm_scat.set_offsets(np.empty((0,2)))
@@ -287,12 +315,39 @@ if __name__ == '__main__':
             inter_high_scat.set_offsets(np.empty((0,2)))
             inter_title_text.set_text(f"{building.name} - {'Ground Floor' if floor==0 else f'Floor no {floor}'} (0 people)")
 
+        if inter_ff_scat is not None:
+            ff_agents = [a for a in ig.get_agents_on_floor(floor) if getattr(a, 'is_firefighter', False)]
+            if ff_agents:
+                inter_ff_scat.set_offsets(np.c_[[a.x for a in ff_agents], [a.y for a in ff_agents]])
+            else:
+                inter_ff_scat.set_offsets(np.empty((0, 2)))
+
+        if inter_water_scat is not None:
+            ig.interior_water_particles = [p for p in getattr(ig, 'interior_water_particles', []) if p['life'] > 0]
+            for p in ig.interior_water_particles:
+                p['x'] += p['vx']
+                p['y'] += p['vy']
+                p['life'] -= 1
+            floor_water = [p for p in ig.interior_water_particles if p['floor'] == floor]
+            if floor_water:
+                inter_water_scat.set_offsets(np.c_[[p['x'] for p in floor_water], [p['y'] for p in floor_water]])
+            else:
+                inter_water_scat.set_offsets(np.empty((0, 2)))
+
+        if getattr(ig, 'fire_alarm_active', False):
+            interior_alarm_panel.set_text(f"Fire Alarm in {building.name}")
+            interior_alarm_panel.set_visible(True)
+        else:
+            if 'interior_alarm_panel' in globals():
+                interior_alarm_panel.set_visible(False)
+
         ax_btn_down.set_visible(True)
         ax_btn_up.set_visible(True)
         fig.canvas.draw_idle()
 
+    tracked_stair = None
     def on_click(event):
-        global selected_building, current_floor, selected_agent_id, last_drawn_floor
+        global tracked_stair, selected_building, current_floor, selected_agent_id, last_drawn_floor
 
         if event.inaxes == ax:
             cx, cy = event.xdata, event.ydata
@@ -330,9 +385,17 @@ if __name__ == '__main__':
             cx, cy = event.xdata, event.ydata
             if cx is None:
                 return
+
+            for stair in ig.get_stair_nodes():
+                if (cx - stair[0])**2 + (cy - stair[1])**2 < 12.0:
+                    tracked_stair = stair
+                    return
+
             if is_fire_mode:
                 if not getattr(model, 'fire_ever_started', False):
                     ig.set_fire_on_floor(current_floor, cx, cy)
+                    model.interior_fire_only = True
+                    model.fire_started = True
                     model.fire_ever_started = True
                     last_drawn_floor = -1
                     render_interior(selected_building, current_floor)
@@ -387,6 +450,8 @@ if __name__ == '__main__':
                 fig.canvas.draw_idle()
 
     def update(frame):
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
         model.step()
         if selected_building and selected_building.interior_grid:
             selected_building.interior_grid.step()
@@ -455,18 +520,16 @@ if __name__ == '__main__':
         status_txt = "Campus Status:\n"
         for b in sorted_buildings[:12]:
             if len(b.inventory) > 0:
-                panicked = sum(1 for s in b.inventory if getattr(s, 'is_panicked', False))
-                status_txt += f"- {b.name}: {len(b.inventory)} people ({panicked} panicked\n"
+                status_txt += f"- {b.name}: {len(b.inventory)} people\n"
         menu_text.set_text(status_txt)
         menu_text.set_bbox(dict(boxstyle='round', facecolor='#e6f2ff', edgecolor='gray', alpha=0.9))
 
-        burning_buildings = [b for b in model.buildings if b.is_on_fire]
+        burning_buildings = [b for b in model.buildings if b.is_on_fire or (b.interior_grid and b.interior_grid.fire_floors)]
         has_fire = len(burning_buildings) > 0
         if has_fire:
             fire_txt = f"FIRE DETECTED! Radius: {model.current_fire_radius:.1f}m\n\n"
             for b in burning_buildings[:3]:
-                panicked = sum(1 for s in b.inventory if getattr(s, 'is_panicked', False))
-                fire_txt += f"Fire at {b.name}\n ({len(b.inventory)} people inside {panicked} panicked)\n"
+                fire_txt += f"Fire at {b.name}\n ({len(b.inventory)} people inside)\n"
             if len(burning_buildings) > 3:
                 fire_txt += f"...and other {len(burning_buildings) - 3} burning buildings\n"
 
@@ -482,6 +545,52 @@ if __name__ == '__main__':
             fire_panel.set_visible(True)
         else:
             fire_panel.set_visible(False)
+
+        if tracked_stair and selected_building:
+            ig = selected_building.interior_grid
+            queue = ig.stair_queues.get(tracked_stair, [])
+
+            on_stairs = []
+            for floor_idx in ig.floors:
+                for a in ig.floors[floor_idx]:
+                    if not a.in_transit:
+                        continue
+                    if getattr(a, 'is_firefighter', False):
+                        on_stairs.append(a)
+                    elif abs(a.x - tracked_stair[0]) < 3 and abs(a.y - tracked_stair[1]) < 3:
+                        on_stairs.append(a)
+
+            info_txt = "Stair Bottleneck: \n"
+            info_txt += f"People on stairs: {len(on_stairs)}\n"
+
+
+            for a in on_stairs:
+                if getattr(a, 'is_firefighter', False):
+                    ff_ref = getattr(a, 'firefighter_ref', None)
+                    name = getattr(ff_ref, 'full_name', 'Firefighter') if ff_ref else 'Firefighter'
+                    start_f = getattr(a, 'firefighter_climb_start_floor', a.floor)
+                    end_f = getattr(a, 'firefighter_climb_target_floor', a.target_floor)
+                    total_time = getattr(a, 'stair_timer_total', 35.0)
+                    progress = 1.0 - (a.stair_timer / total_time) if total_time > 0 else 1.0
+                else:
+                    name = a.map_student.full_name if getattr(a, 'map_student', None) else "Student"
+                    start_f = a.floor
+                    end_f = a.target_floor
+                    progress = 1.0 - (a.stair_timer / 35.0)
+
+                curr_f = start_f + (end_f - start_f) * progress
+                info_txt += f"- {name} (floor {int(round(curr_f))})\n"
+
+
+            info_txt += f"\nWaiting: {len(queue)}"
+            for a in queue[:5]:
+                name = a.map_student.full_name if a.map_student else "Firefighter"
+                info_txt += f"- {name}\n"
+            if len(queue) > 5:
+                info_txt += f"...and {len(queue) - 5} more\n"
+
+            bottleneck_panel.set_text(info_txt)
+            bottleneck_panel.set_visible(True)
 
         has_alert = getattr(model, 'alarm_triggered', False) and not getattr(model, 'truck_dispatched', False)
 
@@ -524,6 +633,8 @@ if __name__ == '__main__':
         else:
             water_scat.set_offsets(np.empty((0, 2)))
 
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
         return scat, fire_glow, fire_core, smoke_scatter, high_scat, alert_panel, fire_panel, menu_text, truck_scat, ff_scat, water_scat
 
     fig.canvas.mpl_connect('button_press_event', on_click)

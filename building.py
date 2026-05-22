@@ -5,6 +5,7 @@ from shapely.geometry import Point
 
 class Building:
     def __init__(self, name, door_node, door_coords, area):
+        self.model = None
         self.name = name
         self.door_node = door_node
         self.door_coords = door_coords

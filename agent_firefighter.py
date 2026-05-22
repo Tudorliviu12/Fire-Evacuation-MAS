@@ -8,6 +8,7 @@ from shapely.geometry import Point
 from typing import TYPE_CHECKING
 from config import FIREFIGHTER_STANDOFF, MIN_FIREFIGHTER_DIST, WATER_SPREAD_ANGLE, WATER_PARTICLES_PER_FRAME, WATER_PARTICLE_SPEED, WATER_EXTINGUISH_POWER, FIREFIGHTER_RETREAT_DIST, FIREFIGHTER_ADVANCE_DIST
 from pathfinder import DStarLite
+from interior_agent import InteriorAgent
 if TYPE_CHECKING:
     from simulation_model import CampusModel
 
@@ -57,6 +58,10 @@ class Firefighter(Agent):
         self.tunnel_cooldown = 0
         self.pos_history = []
         self.spawn_cooldown = 30
+        self.indoor_state = None
+        self.indoor_building = None
+        self.indoor_agent = None
+        self.indoor_target_floor = None
 
         self.compute_standoff_post()
         self.init_path_to_post()
@@ -116,18 +121,27 @@ class Firefighter(Agent):
             except Exception:
                 self.path = []
 
-    def is_too_close(self, x, y):
+    def is_too_close(self, x, y, min_dist=None):
+        if min_dist is None:
+            min_dist = MIN_FIREFIGHTER_DIST
         for agent in self.model.active_agents_cache:
             if agent is self:
                 continue
             if agent is self.truck:
                 continue
             if type(agent).__name__ in ('Firefighter', 'Firetruck'):
-                if (x-agent.x)**2 + (y-agent.y)**2 <= MIN_FIREFIGHTER_DIST**2:
+                if (x - agent.x) ** 2 + (y - agent.y) ** 2 <= min_dist ** 2:
                     return True
         return False
 
     def move(self):
+        if self.indoor_state is not None:
+            self.move_indoor()
+            return
+        if self.has_arrived and self.model.fire_started and not self.is_returning:
+            if self.check_enter_building():
+                return
+
         if (not self.model.fire_started or self.is_returning) and self.truck:
             if not self.is_returning:
                 self.pos_history = []
@@ -283,6 +297,278 @@ class Firefighter(Agent):
             self.burst_paused = random.randint(18,35)
         else:
             self.shoot_cooldown = self.shoot_interval
+
+    def check_enter_building(self):
+        for b in self.model.buildings:
+            if not getattr(b, 'interior_grid', None):
+                continue
+            ig = b.interior_grid
+            if getattr(ig, 'fire_extinguished_indoors', False):
+                continue
+            if not ig.fire_floors:
+                continue
+
+            door_x, door_y = b.door_coords
+            my_dist = math.sqrt((door_x - self.x) ** 2 + (door_y - self.y) ** 2)
+            if my_dist <= 80.0:
+                self.x = door_x
+                self.y = door_y
+                self.start_coords = b.door_coords
+                self.start_indoor(b, ig)
+                return True
+        return False
+
+    def start_indoor(self, building, ig):
+        if not ig.fire_centers:
+            return
+        target_floor = max(ig.fire_centers.keys(), key=lambda f:ig.fire_centers[f]['radius'])
+        self.indoor_building = building
+        self.indoor_target_floor = target_floor
+        self.indoor_state = 'entering'
+        self.is_hidden = True
+
+        stair = ig.stair_nodes[0] if ig.stair_nodes else (ig.grid_nodes[0] if ig.grid_nodes else (50.0, 50.0))
+        ia = InteriorAgent(
+            agent_id = f"FF_{self.unique_id}",
+            x=stair[0], y=stair[1],
+            floor=0,
+            map_student=None
+        )
+        ia.is_firefighter = True
+        ia.firefighter_ref = self
+        ia.is_exiting = False
+        ia.target_floor = target_floor
+        ia.is_aware_of_fire = True
+        ig.floors[0].append(ia)
+        self.indoor_agent = ia
+
+    def move_indoor(self):
+        ia = self.indoor_agent
+        ig = self.indoor_building.interior_grid if self.indoor_building else None
+
+        if ia is None or ig is None:
+            self.indoor_state = None
+            self.is_hidden = False
+            return
+
+        if self.indoor_state == 'entering':
+            ia.target_floor = self.indoor_target_floor
+            ia.is_exiting = False
+
+            best_stair = min(ig.stair_nodes, key=lambda s: (ia.x - s[0]) ** 2 + (ia.y - s[1]) ** 2)
+            dx = best_stair[0] - ia.x
+            dy = best_stair[1] - ia.y
+            dist = math.sqrt(dx * dx + dy * dy)
+
+            if dist > 1.5:
+                ia.x += (dx / dist) * 2.0
+                ia.y += (dy / dist) * 2.0
+            else:
+                ia.x, ia.y = best_stair
+                ia.in_transit = True
+                floors_diff = abs(self.indoor_target_floor - ia.floor)
+                ia.stair_timer = 35 * max(1, floors_diff)
+                ia.stair_timer_total = ia.stair_timer
+                ia.firefighter_climb_start_floor = ia.floor
+                ia.firefighter_climb_target_floor = self.indoor_target_floor
+                self.indoor_state = 'climbing'
+
+        elif self.indoor_state == 'climbing':
+            if ia.stair_timer > 0:
+                ia.stair_timer -= 1
+                start_f = getattr(ia, 'firefighter_climb_start_floor', 0)
+                target_f = getattr(ia, 'firefighter_climb_target_floor', self.indoor_target_floor)
+                total = getattr(ia, 'stair_timer_total', 35.0)
+                progress = 1.0 - (ia.stair_timer / total) if total > 0 else 1.0
+                ia.floor = round(start_f + (target_f - start_f) * progress)
+                return
+
+            ia.in_transit = False
+            target_f = getattr(ia, 'firefighter_climb_target_floor', self.indoor_target_floor)
+            ig.move_agent_to_floor(ia, target_f)
+            ia.path = []
+            self.indoor_state = 'fighting'
+
+        elif self.indoor_state == 'fighting':
+            fc = ig.fire_centers.get(self.indoor_target_floor)
+            if not fc:
+                self.indoor_state = 'descending'
+                ia.path = []
+                return
+            fx, fy = fc['x'], fc['y']
+            standoff_dist = max(3.0, fc['radius'] + 2.0)
+            target_x = fx + math.cos(self.angle_offset) * standoff_dist
+            target_y = fy + math.sin(self.angle_offset) * standoff_dist
+
+            while not ig.polygon.contains(Point(target_x, target_y)) and standoff_dist > 0.5:
+                standoff_dist -= 0.5
+                target_x = fx + math.cos(self.angle_offset) * standoff_dist
+                target_y = fy + math.sin(self.angle_offset) * standoff_dist
+            dx_fire = fx - ia.x
+            dy_fire = fy - ia.y
+            dist_to_fire = max(0.1, math.sqrt(dx_fire ** 2 + dy_fire ** 2))
+            dx_t = target_x - ia.x
+            dy_t = target_y - ia.y
+            dist_to_target = math.sqrt(dx_t ** 2 + dy_t ** 2)
+            if dist_to_target > 2.0 and dist_to_fire > fc['radius'] + 0.5:
+                if not getattr(ia, 'path', None):
+                    if ig.grid_nodes:
+                        closest = min(ig.grid_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
+                        dest = min(ig.grid_nodes, key=lambda n: (n[0] - target_x) ** 2 + (n[1] - target_y) ** 2)
+                        try:
+                            full_path = nx.shortest_path(ig.graph, closest, dest)
+                            ia.path = full_path[1:] if len(full_path) > 1 else [dest]
+                        except:
+                            ia.path = [dest]
+                    else:
+                        ia.path = [(target_x, target_y)]
+                if ia.path:
+                    next_pt = ia.path[0]
+                    dx = next_pt[0] - ia.x
+                    dy = next_pt[1] - ia.y
+                    d = max(0.1, math.sqrt(dx * dx + dy * dy))
+                    if d < 1.2:
+                        ia.path.pop(0)
+                    else:
+                        nx_ = ia.x + (dx / d) * 1.5
+                        ny_ = ia.y + (dy / d) * 1.5
+                        if ig.polygon.contains(Point(nx_, ny_)):
+                            ia.x, ia.y = nx_, ny_
+                        else:
+                            ia.path.pop(0)
+            else:
+                if dist_to_target > 0.2:
+                    nx_ = ia.x + (dx_t / dist_to_target) * 0.8
+                    ny_ = ia.y + (dy_t / dist_to_target) * 0.8
+                    if ig.polygon.contains(Point(nx_, ny_)):
+                        ia.x, ia.y = nx_, ny_
+                ia.path = []
+                fc['radius'] = max(0.0, fc['radius'] - 0.25)
+                if not hasattr(ig, 'interior_water_particles'):
+                    ig.interior_water_particles = []
+                base_angle = math.atan2(dy_fire, dx_fire)
+                exact_life = int(dist_to_fire / WATER_PARTICLE_SPEED) + 3
+                for _ in range(12):
+                    ang = base_angle + random.uniform(-WATER_SPREAD_ANGLE, WATER_SPREAD_ANGLE)
+                    speed_mod = random.uniform(0.7, 1.3)
+                    ig.interior_water_particles.append({
+                        'x': ia.x, 'y': ia.y,
+                        'vx': math.cos(ang) * WATER_PARTICLE_SPEED * speed_mod,
+                        'vy': math.sin(ang) * WATER_PARTICLE_SPEED * speed_mod,
+                        'floor': ia.floor,
+                        'life': exact_life
+                    })
+
+            if fc['radius'] <= 0:
+                ig.fire_floors.discard(self.indoor_target_floor)
+                ig.fire_centers.pop(self.indoor_target_floor, None)
+                ig.fire_extinguished_indoors = True
+                if self.truck:
+                    self.truck.is_returning = True
+                    for ff in self.truck.firefighters:
+                        ff.is_returning = True
+                self.indoor_state = 'descending'
+                ia.path = []
+
+        elif self.indoor_state == 'descending':
+            best_stair = min(ig.stair_nodes, key=lambda s: (ia.x - s[0]) ** 2 + (ia.y - s[1]) ** 2)
+            if not getattr(ia, 'path', None):
+                closest = min(ig.grid_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
+                try:
+                    full_path = nx.shortest_path(ig.graph, closest, best_stair)
+                    ia.path = full_path[1:] if len(full_path) > 1 else [best_stair]
+                except:
+                    ia.path = [best_stair]
+
+            if ia.path:
+                next_pt = ia.path[0]
+                dx = next_pt[0] - ia.x
+                dy = next_pt[1] - ia.y
+                d = max(0.1, math.sqrt(dx * dx + dy * dy))
+                if d < 1.5:
+                    ia.path.pop(0)
+                else:
+                    ia.x += (dx / d) * 2.0
+                    ia.y += (dy / d) * 2.0
+            else:
+                ia.in_transit = True
+                ia.stair_timer = 35 * max(1, ia.floor)
+                ia.stair_timer_total = ia.stair_timer
+                ia.firefighter_climb_start_floor = ia.floor
+                ia.firefighter_climb_target_floor = 0
+                self.indoor_state = 'descending_stairs'
+
+        elif self.indoor_state == 'descending_stairs':
+            if ia.stair_timer > 0:
+                ia.stair_timer -= 1
+                start_f = getattr(ia, 'firefighter_climb_start_floor', ia.floor)
+                total = getattr(ia, 'stair_timer_total', 35.0)
+                progress = 1.0 - (ia.stair_timer / total) if total > 0 else 1.0
+                ia.floor = round(start_f * (1.0 - progress))
+                return
+            ia.in_transit = False
+            ig.move_agent_to_floor(ia, 0)
+            self.indoor_state = 'exiting'
+
+        elif self.indoor_state == 'exiting':
+            self.exit_indoor()
+
+    def is_too_close_indoor(self, ia, x, y, min_dist=2):
+        ig = self.indoor_building.interior_grid if self.indoor_building else None
+        if not ig:
+            return False
+        for floor_agents in ig.floors.values():
+            for other_ia in floor_agents:
+                if other_ia is ia:
+                    continue
+                if not getattr(other_ia, 'is_firefighter', False):
+                    continue
+                dist_sq = (x - other_ia.x) ** 2 + (y - other_ia.y) ** 2
+                if dist_sq <= min_dist ** 2:
+                    return True
+        return False
+
+    def switch_to_floor(self, ig, ia, new_floor):
+        self.indoor_target_floor = new_floor
+        ia.target_floor = new_floor
+        current = ia.floor
+        best_stair = min(ig.stair_nodes, key=lambda s: (ia.x-s[0])**2 + (ia.y-s[1])**2)
+        ia.x, ia.y = best_stair
+        ia.in_transit = True
+        floors_dif = abs(new_floor - current)
+        ia.stair_timer = 35*max(1, floors_dif)
+        ia.firefighter_climb_start_floor = current
+        ia.firefighter_climb_target_floor = new_floor
+        self.indoor_state = 'climbing'
+
+    def exit_indoor(self):
+        ia = self.indoor_agent
+        ig = self.indoor_building.interior_grid if self.indoor_building else None
+
+        if ia and ig:
+            for floor in ig.floors.values():
+                if ia in floor:
+                    floor.remove(ia)
+                    break
+            for queue in ig.stair_queues.values():
+                if ia in queue:
+                    queue.remove(ia)
+
+        if self.indoor_building:
+            self.x = self.indoor_building.door_coords[0]
+            self.y = self.indoor_building.door_coords[1]
+
+        self.is_hidden = False
+        self.indoor_state = None
+        self.indoor_building = None
+        self.indoor_agent = None
+        self.indoor_target_floor = None
+        self.is_returning = True
+        self.path = []
+        self.edge_waypoints = []
+        self.frames_current = 0
+        self.frames_total = 1
+        self.has_arrived = False
 
     def step(self):
         self.move()

@@ -54,6 +54,7 @@ class CampusModel(Model):
         self.hotspot_names = list(RAW_LOCATIONS.keys())
         self.hotspot_nodes = []
         self.hotspot_weights = []
+        self.interior_fire_only = False
         self.buildings_shape = unary_union(buildings_gdf.geometry) if not buildings_gdf.empty else None
 
         for name in self.hotspot_names:
@@ -99,6 +100,9 @@ class CampusModel(Model):
             self.buildings.append(b)
             self.buildings_weights.append(area_weight)
 
+        for b in self.buildings:
+            b.model = self
+
         for i in range(n_students):
             if random.random() < 0.1:
                 start_node = random.choice(all_nodes_ids)
@@ -142,6 +146,7 @@ class CampusModel(Model):
         if self.fire_ever_started:
             return
         print(f"Fire started at {x}, {y}")
+        self.interior_fire_only = False
         self.fire_ever_started = True
         self.fire_strength = random.randint(1,4)
         self.trucks_max_needed = min(3, self.fire_strength + 1)
@@ -237,40 +242,53 @@ class CampusModel(Model):
                 chosen_building.inventory.append(new_agent)
                 self.schedule.add(new_agent)
 
-        if self.fire_started:
-            if self.alarm_triggered:
-                if not self.truck_dispatched:
-                    self.truck_timer -= 1
-                    if self.truck_timer <= 0:
-                        self.truck_dispatched = True
-                        self.truck_count = 1
+        if not self.fire_started and self.alarm_triggered:
+            for b in self.buildings:
+                ig = getattr(b, 'interior_grid', None)
+                if ig and ig.fire_centers:
+                    fc_interior = next(iter(ig.fire_centers.values()))
+                    self.fire_center_x = b.door_coords[0]
+                    self.fire_center_y = b.door_coords[1]
+                    self.current_fire_radius = max(self.current_fire_radius, fc_interior['radius'] * 0.3)
+                    self.interior_fire_only = True
+                    break
+
+        if self.alarm_triggered:
+            if not self.truck_dispatched:
+                self.truck_timer -= 1
+                if self.truck_timer <= 0:
+                    self.truck_dispatched = True
+                    self.truck_count = 1
+                    self.ticks_since_last_truck = 0
+                    entry_node = self.safe_nodes[0 % len(self.safe_nodes)]
+                    entry_x = self.nodes_proj.loc[entry_node].geometry.x
+                    entry_y = self.nodes_proj.loc[entry_node].geometry.y
+                    auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
+                    truck = Firetruck("TRUCK_1", self, auto_entry)
+                    self.schedule.add(truck)
+
+            if self.truck_dispatched and self.truck_count < self.trucks_max_needed:
+                trucks_arrived = [
+                    a for a in self.schedule.agents
+                    if type(a).__name__ == 'Firetruck' and getattr(a, 'has_arrived', False)
+                ]
+                if not trucks_arrived:
+                    self.ticks_since_last_truck = 0
+                else:
+                    self.ticks_since_last_truck += 1
+                    if self.ticks_since_last_truck > 100:
+                        self.truck_count += 1
                         self.ticks_since_last_truck = 0
-                        entry_node = self.safe_nodes[0]
+                        entry_node = self.safe_nodes[self.truck_count % len(self.safe_nodes)]
                         entry_x = self.nodes_proj.loc[entry_node].geometry.x
                         entry_y = self.nodes_proj.loc[entry_node].geometry.y
                         auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
-                        truck = Firetruck("TRUCK_1", self, auto_entry)
+                        truck = Firetruck(f"TRUCK_{self.truck_count}", self, auto_entry)
                         self.schedule.add(truck)
 
-                elif self.truck_count < self.trucks_max_needed:
-                    trucks_arrived = [
-                        a for a in self.schedule.agents
-                        if type(a).__name__ == 'Firetruck' and getattr(a, 'has_arrived', False)
-                    ]
-                    if not trucks_arrived:
-                        self.ticks_since_last_truck = 0
-                    else:
-                        self.ticks_since_last_truck += 1
-                        if self.ticks_fire_growing > 50 and self.ticks_since_last_truck > 100:
-                            self.truck_count += 1
-                            self.ticks_since_last_truck = 0
-                            self.ticks_fire_growing = 0
-                            entry_node = self.safe_nodes[0]
-                            entry_x = self.nodes_proj.loc[entry_node].geometry.x
-                            entry_y = self.nodes_proj.loc[entry_node].geometry.y
-                            auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
-                            truck = Firetruck(f"TRUCK_{self.truck_count}", self, auto_entry)
-                            self.schedule.add(truck)
+        if self.fire_started and not getattr(self, 'interior_fire_only', False):
+            if self.alarm_triggered:
+                pass
 
             growth = self.fire_growth_rate + random.uniform(-0.01, 0.01)
             if self.current_fire_radius > MAX_FIRE_RADIUS_SOFT_CAP:

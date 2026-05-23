@@ -580,13 +580,17 @@ if __name__ == '__main__':
                 for a in ig.floors[floor_idx]:
                     if not a.in_transit:
                         continue
-                    if getattr(a, 'is_firefighter', False):
-                        on_stairs.append(a)
-                    elif abs(a.x - tracked_stair[0]) < 3 and abs(a.y - tracked_stair[1]) < 3:
-                        on_stairs.append(a)
+                    assigned = getattr(a, 'assigned_stair', None)
+                    if assigned is not None:
+                        if assigned == tracked_stair:
+                            on_stairs.append(a)
+                    else:
+                        if abs(a.x - tracked_stair[0]) < 3 and abs(a.y - tracked_stair[1]) < 3:
+                            on_stairs.append(a)
 
-            info_txt = "Stair Bottleneck: \n"
-            info_txt += f"People on stairs: {len(on_stairs)}\n"
+            stair_idx = ig.stair_nodes.index(tracked_stair) + 1 if tracked_stair in ig.stair_nodes else "?"
+            info_txt = f"Stair {stair_idx} Bottleneck:\n"
+            info_txt += f"On stairs: {len(on_stairs)}\n"
 
 
             for a in on_stairs:
@@ -610,7 +614,13 @@ if __name__ == '__main__':
 
             info_txt += f"\nWaiting: {len(queue)}"
             for a in queue[:5]:
-                name = a.map_student.full_name if a.map_student else "Firefighter"
+                if getattr(a, 'is_firefighter', False):
+                    ff_ref = getattr(a, 'firefighter_ref', None)
+                    name = getattr(ff_ref, 'full_name', 'Firefighter') if ff_ref else 'Firefighter'
+                    if getattr(a, 'assigned_stair', None) != tracked_stair:
+                        continue
+                else:
+                    name = a.map_student.full_name if a.map_student else "?"
                 info_txt += f"- {name}\n"
             if len(queue) > 5:
                 info_txt += f"...and {len(queue) - 5} more\n"

@@ -24,9 +24,9 @@ class Firefighter(Agent):
         self.angle_offset = angle_offset
         self.truck = truck
         self.shoot_cooldown = 0
-        self.shoot_interval = random.randint(5,10)
+        self.shoot_interval = random.randint(4, 8)
         self.burst_count = 0
-        self.burst_max = random.randint(3,6)
+        self.burst_max = random.randint(8,14)
         self.burst_paused = 0
         self.base_speed = 1.0
         self.current_speed = self.base_speed
@@ -300,7 +300,7 @@ class Firefighter(Agent):
         self.burst_count += 1
         if self.burst_count >= self.burst_max:
             self.burst_count = 0
-            self.burst_paused = random.randint(18,35)
+            self.burst_paused = random.randint(10,20)
         else:
             self.shoot_cooldown = self.shoot_interval
 
@@ -333,13 +333,14 @@ class Firefighter(Agent):
         self.indoor_state = 'entering'
         self.is_hidden = True
 
-        stair = ig.stair_nodes[0] if ig.stair_nodes else (ig.grid_nodes[0] if ig.grid_nodes else (50.0, 50.0))
+        stair = random.choice(ig.stair_nodes) if ig.stair_nodes else (ig.grid_nodes[0] if ig.grid_nodes else (50.0, 50.0))
         ia = InteriorAgent(
             agent_id = f"FF_{self.unique_id}",
             x=stair[0], y=stair[1],
             floor=0,
             map_student=None
         )
+        ia.assigned_stair = stair
         ia.is_firefighter = True
         ia.firefighter_ref = self
         ia.is_exiting = False
@@ -361,7 +362,7 @@ class Firefighter(Agent):
             ia.target_floor = self.indoor_target_floor
             ia.is_exiting = False
 
-            best_stair = min(ig.stair_nodes, key=lambda s: (ia.x - s[0]) ** 2 + (ia.y - s[1]) ** 2)
+            best_stair = getattr(ia, 'assigned_stair', None) or min(ig.stair_nodes, key=lambda s: (ia.x - s[0]) ** 2 + (ia.y - s[1]) ** 2)
             dx = best_stair[0] - ia.x
             dy = best_stair[1] - ia.y
             dist = math.sqrt(dx * dx + dy * dy)
@@ -399,39 +400,30 @@ class Firefighter(Agent):
                 return
 
             fx, fy = fc['x'], fc['y']
-            if not hasattr(ia, 'fight_target_x') or (fc['radius'] > getattr(ia, 'fight_target_r', 0) + 4.0):
-                standoff_dist = max(4.0, fc['radius'] + 4.0)
-                target_x = fx + math.cos(self.angle_offset) * standoff_dist
-                target_y = fy + math.sin(self.angle_offset) * standoff_dist
-                while not ig.safe_polygon.contains(Point(target_x, target_y)) and standoff_dist > 3.0:
-                    standoff_dist -= 0.5
-                    target_x = fx + math.cos(self.angle_offset) * standoff_dist
-                    target_y = fy + math.sin(self.angle_offset) * standoff_dist
-                ia.fight_target_x = target_x
-                ia.fight_target_y = target_y
-                ia.fight_target_r = fc['radius']
-                ia.path = []
-
-            target_x = ia.fight_target_x
-            target_y = ia.fight_target_y
-
             dx_fire = fx - ia.x
             dy_fire = fy - ia.y
             dist_to_fire = max(0.1, math.sqrt(dx_fire ** 2 + dy_fire ** 2))
-            dx_t = target_x - ia.x
-            dy_t = target_y - ia.y
-            dist_to_target = math.sqrt(dx_t ** 2 + dy_t ** 2)
+            if not hasattr(ia, 'fight_post') or ia.fight_post is None:
+                angle_personal = (hash(str(self.unique_id)) % 360) * (math.pi / 180.0)
+                safe_nodes = [n for n in ig.grid_nodes if n not in ig.burned_nodes]
+                if safe_nodes:
+                    dest = min(safe_nodes, key=lambda n: (abs(math.sqrt((n[0] - fx) ** 2 + (n[1] - fy) ** 2) - 7.0) * 0.5 + abs(math.atan2(n[1] - fy, n[0] - fx) - angle_personal) * 8.0))
+                    ia.fight_post = dest
+                else:
+                    ia.fight_post = None
 
-            if dist_to_target > 2.0:
+            if dist_to_fire < 3.5:
+                ia.fight_post = None
                 if not ia.path:
-                    closest = min(ig.grid_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
-                    dest = min(ig.grid_nodes, key=lambda n: (n[0] - target_x) ** 2 + (n[1] - target_y) ** 2)
-                    try:
-                        full = nx.shortest_path(ig.graph, closest, dest)
-                        ia.path = full[1:] if len(full) > 1 else [dest]
-                    except:
-                        ia.path = [dest]
-                    ia.path.append((target_x, target_y))
+                    safe_nodes = [n for n in ig.grid_nodes if n not in ig.burned_nodes]
+                    if safe_nodes:
+                        closest = min(safe_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
+                        far = max(safe_nodes, key=lambda n: (n[0] - fx) ** 2 + (n[1] - fy) ** 2)
+                        try:
+                            full = nx.shortest_path(ig.graph, closest, far)
+                            ia.path = full[1:] if len(full) > 1 else [far]
+                        except Exception:
+                            ia.path = [far]
 
                 if ia.path:
                     next_pt = ia.path[0]
@@ -443,53 +435,83 @@ class Firefighter(Agent):
                     else:
                         nx_ = ia.x + (dx / d) * 1.5
                         ny_ = ia.y + (dy / d) * 1.5
-                        if not self.is_too_close_indoor(ia, nx_, ny_, min_dist=1.5):
+                        if ig.safe_polygon.contains(Point(nx_, ny_)):
                             ia.x, ia.y = nx_, ny_
                         else:
-                            ia.path.pop(0)
-            else:
-                ia.path = []
-                fc['radius'] = max(0.0, fc['radius'] - 0.05)
-                if self.burst_paused > 0:
-                    self.burst_paused -= 1
-                elif self.shoot_cooldown > 0:
-                    self.shoot_cooldown -= 1
-                else:
-                    if not hasattr(ig, 'interior_water_particles'):
-                        ig.interior_water_particles = []
-                    base_angle = math.atan2(dy_fire, dx_fire)
-                    exact_life = int(dist_to_fire / WATER_PARTICLE_SPEED) + random.randint(0, 2)
-                    for _ in range(5):
-                        ang = base_angle + random.uniform(-WATER_SPREAD_ANGLE, WATER_SPREAD_ANGLE)
-                        ig.interior_water_particles.append({
-                            'x': ia.x, 'y': ia.y,
-                            'vx': math.cos(ang) * WATER_PARTICLE_SPEED,
-                            'vy': math.sin(ang) * WATER_PARTICLE_SPEED,
-                            'floor': ia.floor, 'life': exact_life
-                        })
-                    self.burst_count += 1
-                    if hasattr(self, 'burst_max') and self.burst_count >= self.burst_max:
-                        self.burst_count = 0
-                        self.burst_paused = random.randint(18, 35)
-                    else:
-                        self.shoot_cooldown = self.shoot_interval
+                            ia.path = []
+                return
 
-            if not hasattr(ia, 'stuck_hist'): ia.stuck_hist = []
+            if ia.fight_post is not None:
+                dp = math.sqrt((ia.x - ia.fight_post[0]) ** 2 + (ia.y - ia.fight_post[1]) ** 2)
+                if dp > 2.0:
+                    if not ia.path:
+                        safe_nodes = [n for n in ig.grid_nodes if n not in ig.burned_nodes]
+                        closest = min(safe_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
+                        try:
+                            full = nx.shortest_path(ig.graph, closest, ia.fight_post)
+                            ia.path = full[1:] if len(full) > 1 else [ia.fight_post]
+                        except Exception:
+                            ia.path = [ia.fight_post]
+                    if ia.path:
+                        next_pt = ia.path[0]
+                        dx = next_pt[0] - ia.x
+                        dy = next_pt[1] - ia.y
+                        d = max(0.1, math.sqrt(dx ** 2 + dy ** 2))
+                        if d < 1.2:
+                            ia.path.pop(0)
+                        else:
+                            nx_ = ia.x + (dx / d) * 1.5
+                            ny_ = ia.y + (dy / d) * 1.5
+                            if ig.safe_polygon.contains(Point(nx_, ny_)):
+                                ia.x, ia.y = nx_, ny_
+                            else:
+                                ia.path = []
+                    return
+
+            ia.path = []
+            extinguish_rate = 0.015 + (fc['radius'] / 60.0) * 0.01
+            fc['radius'] = max(0.0, fc['radius'] - extinguish_rate)
+            if self.burst_paused > 0:
+                self.burst_paused -= 1
+            elif self.shoot_cooldown > 0:
+                self.shoot_cooldown -= 1
+
+            else:
+                if not hasattr(ig, 'interior_water_particles'):
+                    ig.interior_water_particles = []
+                base_angle = math.atan2(dy_fire, dx_fire)
+                exact_life = int(dist_to_fire / WATER_PARTICLE_SPEED) + random.randint(0, 2)
+                for _ in range(5):
+                    ang = base_angle + random.uniform(-WATER_SPREAD_ANGLE, WATER_SPREAD_ANGLE)
+                    ig.interior_water_particles.append({
+                        'x': ia.x, 'y': ia.y,
+                        'vx': math.cos(ang) * WATER_PARTICLE_SPEED,
+                        'vy': math.sin(ang) * WATER_PARTICLE_SPEED,
+                        'floor': ia.floor, 'life': exact_life
+                    })
+                self.burst_count += 1
+
+                if self.burst_count >= self.burst_max:
+                    self.burst_count = 0
+                    self.burst_paused = random.randint(8, 14)
+                else:
+                    self.shoot_cooldown = self.shoot_interval
+            if not hasattr(ia, 'stuck_hist'):
+                ia.stuck_hist = []
             ia.stuck_hist.append((ia.x, ia.y))
+
             if len(ia.stuck_hist) > 40:
                 ia.stuck_hist.pop(0)
                 old_x, old_y = ia.stuck_hist[0]
-                if math.sqrt((ia.x - old_x) ** 2 + (ia.y - old_y) ** 2) < 2.5:
-                    safe_nodes = [n for n in ig.grid_nodes if ig.safe_polygon.contains(Point(n))]
-                    if safe_nodes:
-                        rescue = min(safe_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
-                        ia.x, ia.y = rescue[0], rescue[1]
+                if math.sqrt((ia.x - old_x) ** 2 + (ia.y - old_y) ** 2) < 1.5:
+                    ia.fight_post = None
                     ia.path = []
                     ia.stuck_hist = []
 
             if fc['radius'] <= 0:
                 ig.fire_floors.discard(self.indoor_target_floor)
                 ig.fire_centers.pop(self.indoor_target_floor, None)
+                ig.fire_blobs = [b for b in ig.fire_blobs if b['floor'] != self.indoor_target_floor]
                 ig.fire_extinguished_indoors = True
                 self.model.fire_started = False
                 self.model.current_fire_radius = 0.0
@@ -500,7 +522,7 @@ class Firefighter(Agent):
                 ia.path = []
 
         elif self.indoor_state == 'descending':
-            best_stair = min(ig.stair_nodes, key=lambda s: (ia.x - s[0]) ** 2 + (ia.y - s[1]) ** 2)
+            best_stair = getattr(ia, 'assigned_stair', None) or min(ig.stair_nodes, key=lambda s: (ia.x - s[0]) ** 2 + (ia.y - s[1]) ** 2)
             dist_to_stair = math.sqrt((ia.x - best_stair[0]) ** 2 + (ia.y - best_stair[1]) ** 2)
 
             if dist_to_stair > 1.5:
@@ -519,8 +541,14 @@ class Firefighter(Agent):
                     if d < 1.2:
                         ia.path.pop(0)
                     else:
-                        ia.x += (dx / d) * 2.0
-                        ia.y += (dy / d) * 2.0
+                        nx_ = ia.x + (dx / d) * 2.0
+                        ny_ = ia.y + (dy / d) * 2.0
+                        if ig.safe_polygon.contains(Point(nx_, ny_)):
+                            ia.x, ia.y = nx_, ny_
+                        else:
+                            nearest = min(ig.grid_nodes, key=lambda n: (ia.x - n[0]) ** 2 + (ia.y - n[1]) ** 2)
+                            ia.x, ia.y = nearest[0], nearest[1]
+                            ia.path = []
 
             else:
                 ia.x, ia.y = best_stair
@@ -541,6 +569,12 @@ class Firefighter(Agent):
 
         elif self.indoor_state == 'exiting':
             self.exit_indoor()
+
+        if self.indoor_state in ['entering', 'fighting', 'descending'] and ia and ig:
+            if not ig.polygon.contains(Point(ia.x, ia.y)):
+                nearest = min(ig.grid_nodes, key = lambda n: (ia.x - n[0]) ** 2 + (ia.y - n[1]) ** 2)
+                ia.x, ia.y = nearest[0], nearest[1]
+                ia.path = []
 
 
     def is_too_close_indoor(self, ia, x, y, min_dist=2.0):

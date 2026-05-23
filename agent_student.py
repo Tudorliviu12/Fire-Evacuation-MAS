@@ -111,6 +111,9 @@ class Student(Agent):
         self.dstar.notify_fire_zone(self.model.fire_center_x, self.model.fire_center_y, danger_radius)
 
     def recalculate_path(self, retries=1):
+        if self.target_node is None:
+            self.pick_safe_destination()
+            return
         try:
             if not self.node_is_safe_dest(self.target_node):
                 if self.is_aware:
@@ -471,25 +474,27 @@ class Student(Agent):
         fraction = self.frames_current / self.frames_total
 
         if self.model.fire_started and (self.is_panicked or self.is_aware):
-            next_x = self.start_x + fraction * (self.end_x - self.start_x)
-            next_y = self.start_y + fraction * (self.end_y - self.start_y)
-            next_dist = math.sqrt((next_x - self.model.fire_center_x)**2 + (next_y - self.model.fire_center_y)**2)
-            if next_dist <= self.model.current_fire_radius + 3.0:
-                self.path = []
-                self.edge_waypoints = []
-                self.frames_current = self.frames_total
-                self.flee_mode = False
-                dx = self.x - self.model.fire_center_x
-                dy = self.y - self.model.fire_center_y
-                current_dist = math.sqrt(dx*dx + dy*dy)
-                if current_dist > 0.1:
-                    self.x += (dx/current_dist)*2.5
-                    self.y += (dy/current_dist)*2.5
-                    self.start_x, self.start_y = self.x, self.y
-                    self.end_x, self.end_y = self.x, self.y
-                self.notify_dstar_fire_zones()
-                self.recalculate_path()
-                return
+            if not getattr(self.model, 'interior_fire_only', False):
+                next_x = self.start_x + fraction * (self.end_x - self.start_x)
+                next_y = self.start_y + fraction * (self.end_y - self.start_y)
+                next_dist = math.sqrt(
+                    (next_x - self.model.fire_center_x) ** 2 + (next_y - self.model.fire_center_y) ** 2)
+                if next_dist <= self.model.current_fire_radius + 3.0:
+                    self.path = []
+                    self.edge_waypoints = []
+                    self.frames_current = self.frames_total
+                    self.flee_mode = False
+                    dx = self.x - self.model.fire_center_x
+                    dy = self.y - self.model.fire_center_y
+                    current_dist = math.sqrt(dx * dx + dy * dy)
+                    if current_dist > 0.1:
+                        self.x += (dx / current_dist) * 2.5
+                        self.y += (dy / current_dist) * 2.5
+                        self.start_x, self.start_y = self.x, self.y
+                        self.end_x, self.end_y = self.x, self.y
+                    self.notify_dstar_fire_zones()
+                    self.recalculate_path()
+                    return
 
         if getattr(self, 'is_calling_112', False):
             if self.call_timer > 0:

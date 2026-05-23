@@ -28,17 +28,19 @@ class InteriorGrid:
         self.mass_evacuation = False
 
         self.init_agents()
+        if self.grid_nodes:
+            self.grid_center = (sum(n[0] for n in self.grid_nodes) / len(self.grid_nodes), sum(n[1] for n in self.grid_nodes) / len(self.grid_nodes),)
+        else:
+            self.grid_center = (0.0, 0.0)
+
         self.stair_nodes = self.find_stair_nodes()
         self.stair_cooldown = {s: 0 for s in self.stair_nodes}
         self.stair_occupancy = {s: 0 for s in self.stair_nodes}
         self.stair_queues = {s: [] for s in self.stair_nodes}
         self.fire_alarm_active = False
 
-        if self.grid_nodes:
-            self.grid_center = (sum(n[0] for n in self.grid_nodes) / len(self.grid_nodes), sum(n[1] for n in self.grid_nodes) / len(self.grid_nodes),)
-        else:
-            self.grid_center = (0.0, 0.0)
-
+        self.kdtree = None
+        self.kdtree_nodes = []
         self.build_kdtree()
         self.path_cache: dict = {}
         self.graph_version: int = 0
@@ -126,22 +128,22 @@ class InteriorGrid:
         for node in nodes:
             self.graph.add_node(node)
         threshold = self.grid_spacing * 1.5
-        for i in range(len(nodes)):
-            for j in range(i + 1, len(nodes)):
-                n1, n2 = nodes[i], nodes[j]
-                dist = math.sqrt((n1[0]-n2[0])**2 + (n1[1]-n2[1])**2)
-                if dist <= threshold:
-                    line = LineString([n1, n2])
-                    if self.polygon.contains(line):
-                        self.graph.add_edge(n1, n2, weight=dist)
+        tree = KDTree(np.array(nodes))
+        pairs = tree.query_pairs(threshold)
+        for i, j in pairs:
+            n1, n2 = nodes[i], nodes[j]
+            dist = math.sqrt((n1[0] - n2[0]) ** 2 + (n1[1] - n2[1]) ** 2)
+            line = LineString([n1, n2])
+            if self.polygon.contains(line):
+                self.graph.add_edge(n1, n2, weight=dist)
         return nodes
 
     def find_stair_nodes(self):
         if not self.grid_nodes:
             return []
-        left  = min(self.grid_nodes, key=lambda n: n[0])
-        right = max(self.grid_nodes, key=lambda n: n[0])
-        return [left, right]
+        p1 = max(self.grid_nodes, key=lambda n: (n[0]-self.grid_center[0])**2 + (n[1]-self.grid_center[1])**2)
+        p2 = max(self.grid_nodes, key=lambda n: (n[0] - p1[0]) ** 2 + (n[1] - p1[1]) ** 2)
+        return [p1, p2]
 
     def init_agents(self):
         inv = self.building.inventory
@@ -208,13 +210,17 @@ class InteriorGrid:
                 stud.target_node = None
                 stud.pick_safe_destination()
                 attempts += 1
-            if hasattr(stud, 'init_path_to_target'):
-                stud.init_path_to_target()
         else:
             stud.choose_new_mission()
-            if hasattr(stud, 'init_path_to_target'):
-                stud.init_path_to_target()
 
+        stud.path = []
+        stud.edge_waypoints = []
+        stud.frames_current = stud.frames_total
+        stud.waiting_timer = 0
+        stud.recalculate_path()
+
+        stud.current_building = None
+        stud.indoors = False
         agent.map_student = None
 
     def add_student_from_outside(self, student):
@@ -222,7 +228,7 @@ class InteriorGrid:
             return
         floor = 0
         target = getattr(student, 'target_floor', random.randint(0, self.n_floor - 1))
-        best_stair = self.stair_nodes[0] if self.stair_nodes else random.choice(self.grid_nodes)
+        best_stair = random.choice(self.stair_nodes) if self.stair_nodes else random.choice(self.grid_nodes)
         agent = InteriorAgent(agent_id=student.unique_id, x=best_stair[0], y=best_stair[1], floor=floor, map_student=student)
         agent.target_floor = target
         self.floors[floor].append(agent)
@@ -232,7 +238,7 @@ class InteriorGrid:
         for stair in self.stair_nodes:
             if stair in self.graph:
                 try:
-                    paths = nx.single_source_shortest_path(self.graph, stair, weight='weight')
+                    paths = nx.single_source_dijkstra_path(self.graph, stair, weight='weight')
                     for node, path in paths.items():
                         rev_path = list(reversed(path))
                         if node not in self.evac_paths or len(rev_path) < len(self.evac_paths[node]):

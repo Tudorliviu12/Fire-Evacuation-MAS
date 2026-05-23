@@ -4,7 +4,6 @@ import matplotlib.gridspec as gridspec
 import random
 import numpy as np
 import contextily as ctx
-from matplotlib.patches import Polygon
 from matplotlib.lines import Line2D
 from matplotlib.widgets import Button
 from matplotlib.patches import Polygon
@@ -301,6 +300,9 @@ if __name__ == '__main__':
                         if ff_ref and getattr(ff_ref, 'unique_id', None) == selected_agent_id:
                             high_coords = [[a.x, a.y]]
                             break
+                    elif a.map_student and a.map_student.unique_id == selected_agent_id:
+                        high_coords = [[a.x, a.y]]
+                        break
 
             if high_coords:
                 inter_high_scat.set_offsets(high_coords)
@@ -324,10 +326,6 @@ if __name__ == '__main__':
 
         if inter_water_scat is not None:
             ig.interior_water_particles = [p for p in getattr(ig, 'interior_water_particles', []) if p['life'] > 0]
-            for p in ig.interior_water_particles:
-                p['x'] += p['vx']
-                p['y'] += p['vy']
-                p['life'] -= 1
             floor_water = [p for p in ig.interior_water_particles if p['floor'] == floor]
             if floor_water:
                 inter_water_scat.set_offsets(np.c_[[p['x'] for p in floor_water], [p['y'] for p in floor_water]])
@@ -397,6 +395,8 @@ if __name__ == '__main__':
                     model.interior_fire_only = True
                     model.fire_started = True
                     model.fire_ever_started = True
+                    model.fire_center_x = selected_building.door_coords[0]
+                    model.fire_center_y = selected_building.door_coords[1]
                     last_drawn_floor = -1
                     render_interior(selected_building, current_floor)
                     return
@@ -412,6 +412,21 @@ if __name__ == '__main__':
                 selected_agent_id = best.map_student.unique_id
                 update_info_display(best.map_student)
                 render_interior(selected_building, current_floor)
+            else:
+                ff_best, ff_best_d = None, float('inf')
+                for agent in agents:
+                    if not getattr(agent, 'is_firefighter', False):
+                        continue
+                    d = (agent.x - cx)**2 + (agent.y - cy)**2
+                    if d < ff_best_d:
+                        ff_best_d = d
+                        ff_best = agent
+                if ff_best and ff_best_d < 100:
+                    ff_ref = getattr(ff_best, 'firefighter_ref', None)
+                    if ff_ref:
+                        selected_agent_id = ff_ref.unique_id
+                        update_info_display(ff_ref)
+                        render_interior(selected_building, current_floor)
 
     def on_key(event):
         global is_paused, is_fire_mode
@@ -454,7 +469,6 @@ if __name__ == '__main__':
         ylim = ax.get_ylim()
         model.step()
         if selected_building and selected_building.interior_grid:
-            selected_building.interior_grid.step()
             render_interior(selected_building, current_floor)
 
         agents, trucks, firefighters = [], [], []
@@ -576,7 +590,8 @@ if __name__ == '__main__':
                     name = a.map_student.full_name if getattr(a, 'map_student', None) else "Student"
                     start_f = a.floor
                     end_f = a.target_floor
-                    progress = 1.0 - (a.stair_timer / 35.0)
+                    total = getattr(a, 'stair_timer_total', 35.0)
+                    progress = 1.0 - (a.stair_timer / total) if total > 0 else 1.0
 
                 curr_f = start_f + (end_f - start_f) * progress
                 info_txt += f"- {name} (floor {int(round(curr_f))})\n"

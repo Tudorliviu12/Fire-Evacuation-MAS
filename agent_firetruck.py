@@ -43,10 +43,22 @@ class Firetruck(Agent):
         return safe
 
     def nearest_node_in_graph(self, graph, x, y):
+        try:
+            n = ox.distance.nearest_nodes(self.model.G_all, x, y)
+            if n in graph:
+                return n
+        except Exception:
+            pass
         best_n, best_d = None, float('inf')
         for n in graph.nodes():
-            nx_x = graph.nodes[n].get('x', 0)
-            ny_y = graph.nodes[n].get('y', 0)
+            try:
+                row = self.model.nodes_proj.loc[n]
+                nx_x, ny_y = row.geometry.x, row.geometry.y
+            except KeyError:
+                nx_x = graph.nodes[n].get('x', None)
+                ny_y = graph.nodes[n].get('y', None)
+                if nx_x is None:
+                    continue
             d = (nx_x - x) ** 2 + (ny_y - y) ** 2
             if d < best_d:
                 best_d = d
@@ -74,8 +86,9 @@ class Firetruck(Agent):
             self.has_arrived = True
             return
 
-        self.staging_x = safe_graph.nodes[target_n].get('x', self.staging_x)
-        self.staging_y = safe_graph.nodes[target_n].get('y', self.staging_y)
+        if target_n in self.model.nodes_proj.index:
+            self.staging_x = self.model.nodes_proj.loc[target_n].geometry.x
+            self.staging_y = self.model.nodes_proj.loc[target_n].geometry.y
 
         try:
             node_path = nx.shortest_path(safe_graph, start_n, target_n, weight='length')
@@ -94,8 +107,9 @@ class Firetruck(Agent):
             if start_all and target_all and nx.has_path(safe_all, start_all, target_all):
                 node_path = nx.shortest_path(safe_all, start_all, target_all, weight='length')
                 self.path = self.build_waypoint(safe_all, node_path)
-                self.staging_x = safe_all.nodes[target_all].get('x', self.staging_x)
-                self.staging_y = safe_all.nodes[target_all].get('y', self.staging_y)
+                if target_all in self.model.nodes_proj.index:
+                    self.staging_x = self.model.nodes_proj.loc[target_all].geometry.x
+                    self.staging_y = self.model.nodes_proj.loc[target_all].geometry.y
                 return
         except Exception:
             pass

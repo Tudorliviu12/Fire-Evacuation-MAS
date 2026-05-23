@@ -98,9 +98,6 @@ class InteriorGrid:
 
     def set_fire_on_floor(self, floor, x=None, y=None):
         self.fire_floors.add(floor)
-        self.building.model.fire_center_x = self.building.door_coords[0]
-        self.building.model.fire_center_y = self.building.door_coords[1]
-        self.building.model.fire_started = True
         if floor not in self.fire_centers:
             if x is not None and y is not None:
                 cx, cy = x, y
@@ -243,11 +240,7 @@ class InteriorGrid:
                 except Exception:
                     pass
 
-
     def step(self):
-        if getattr(self, 'fire_extinguished_indoors', False):
-            return
-
         if hasattr(self, 'interior_water_particles'):
             self.interior_water_particles = [p for p in self.interior_water_particles if p['life'] > 0]
             for p in self.interior_water_particles:
@@ -258,6 +251,10 @@ class InteriorGrid:
         for floor, fc in self.fire_centers.items():
             growth_speed = 0.01 + (fc['radius'] / 60.0) * 0.08
             fc['radius'] = min(fc['radius'] + growth_speed, 60.0)
+
+            campus_model = getattr(self.building, 'model', None)
+            if campus_model and getattr(campus_model, 'interior_fire_only', False):
+                campus_model.current_fire_radius = max([c['radius'] for c in self.fire_centers.values()] + [0.0])
 
             if not getattr(self, 'fire_alarm_active', False) and any(fc['radius'] >= 5.0 for fc in self.fire_centers.values()):
                 self.fire_alarm_active = True

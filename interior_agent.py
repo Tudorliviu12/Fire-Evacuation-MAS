@@ -70,6 +70,14 @@ class InteriorAgent:
         if self.map_student:
             self.map_student.is_panicked = True
             self.map_student.color = 'red'
+            campus_model = getattr(building_grid.building, 'model', None)
+            if campus_model and not getattr(campus_model, 'alarm_triggered', False):
+                campus_model.alarm_triggered = True
+                campus_model.truck_timer = random.randint(160, 250)
+                campus_model.hero_name = self.map_student.full_name
+                self.map_student.is_calling_112 = True
+                self.map_student.call_timer = 70
+
         self.is_exiting = True
         self.target_floor = 0
         self.path = []
@@ -148,14 +156,17 @@ class InteriorAgent:
         start_f = getattr(self, 'firefighter_climb_start_floor', None)
         target_f = getattr(self, 'firefighter_climb_target_floor', None)
         if start_f is not None and target_f is not None:
-            floors_diff = max(1, abs(target_f - start_f))
-            total = 35 * floors_diff
+            total = getattr(self, 'stair_timer_total', None)
+            if total is None:
+                floors_diff = max(1, abs(target_f - start_f))
+                total = 20 * floors_diff
             if total > 0:
                 progress = 1.0 - (self.stair_timer / total)
                 return round(start_f + (target_f - start_f) * progress)
             return target_f
 
-        progress = 1.0 - (self.stair_timer / 35.0)
+        total = getattr(self, 'stair_timer_total', 35.0)
+        progress = 1.0 - (self.stair_timer / total) if total > 0 else 1.0
         diff = self.target_floor - self.floor
         return round(self.floor + diff * progress)
 

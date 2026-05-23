@@ -45,6 +45,7 @@ class Student(Agent):
         self.call_timer = 0
         self.informed_by = None
         self.alert_cooldown = 0
+        self.previous_node = None
 
         if indoors and building_idx is not None and building_idx < NUM_DORMS:
             self.is_resident = True
@@ -424,19 +425,18 @@ class Student(Agent):
                 self.frames_current = 0
             elif self.path:
                 next_node = self.path.pop(0)
+                if self.previous_node is None:
+                    self.previous_node = ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
                 if self.dstar:
                     if next_node != self.dstar.start:
                         self.dstar.k_m += self.dstar.heuristic(self.dstar.start, next_node)
                         self.dstar.start = next_node
-                if self.path:
-                    curr_node = self.path[0] if not self.edge_waypoints else ox.distance.nearest_nodes(self.model.G_all, self.x, self.y)
-                else:
-                    curr_node = next_node
+
                 self.edge_waypoints = []
                 try:
-                    edge_data = self.model.G_all.get_edge_data(curr_node, next_node)
+                    edge_data = self.model.G_all.get_edge_data(self.previous_node, next_node)
                     if edge_data is None:
-                        edge_data = self.model.G_all.get_edge_data(next_node, curr_node)
+                        edge_data = self.model.G_all.get_edge_data(next_node, self.previous_node)
                     if edge_data is not None:
                         key = list(edge_data.keys())[0]
                         data = edge_data[key]
@@ -463,17 +463,12 @@ class Student(Agent):
                 self.frames_total = max(1, int(dist / self.current_speed))
                 self.frames_current = 0
 
+                self.previous_node = next_node
+
         self.frames_current += 1
         if self.frames_total <= 0:
             self.frames_total = 1
         fraction = self.frames_current / self.frames_total
-
-        if getattr(self, 'is_calling_112', False):
-            if self.call_timer > 0:
-                self.call_timer -= 1
-                fraction = 0.4 * fraction
-            else:
-                self.is_calling_112 = False
 
         if self.model.fire_started and (self.is_panicked or self.is_aware):
             next_x = self.start_x + fraction * (self.end_x - self.start_x)
@@ -495,6 +490,13 @@ class Student(Agent):
                 self.notify_dstar_fire_zones()
                 self.recalculate_path()
                 return
+
+        if getattr(self, 'is_calling_112', False):
+            if self.call_timer > 0:
+                self.call_timer -= 1
+                fraction = 0.4 * fraction
+            else:
+                self.is_calling_112 = False
 
         self.x = self.start_x + fraction * (self.end_x - self.start_x)
         self.y = self.start_y + fraction * (self.end_y - self.start_y)
@@ -534,6 +536,9 @@ class Student(Agent):
 
     def check_survival(self):
         if self.is_dead or not self.model.fire_started:
+            return
+
+        if getattr(self.model, 'interior_fire_only', False):
             return
 
         if self.is_hidden:
@@ -696,11 +701,10 @@ class Student(Agent):
         if self.is_dead:
             return
         if not self.is_active:
-            if not self.is_active:
-                if self.model.schedule.steps >= self.start_delay:
-                    self.is_active = True
-                else:
-                    return
+            if self.model.schedule.steps >= self.start_delay:
+                self.is_active = True
+            else:
+                return
 
         self.check_survival()
 

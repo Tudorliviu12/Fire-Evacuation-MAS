@@ -201,6 +201,9 @@ class CampusModel(Model):
     def check_buildings_fire(self):
         if not self.fire_started:
             return
+        if getattr(self, 'interior_fire_only', False):
+            return
+
         fire_pt = Point(self.fire_center_x, self.fire_center_y)
         for building in self.buildings:
             if not building.is_on_fire:

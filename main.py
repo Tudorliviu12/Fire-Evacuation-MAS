@@ -357,6 +357,17 @@ if __name__ == '__main__':
                 for b in model.buildings:
                     if getattr(b, 'polygon_coords', None) and ShapelyPolygon(b.polygon_coords).contains(click_pt):
                         return
+                is_near_dorm = False
+                for b in model.buildings[:NUM_DORMS]:
+                    if getattr(b, 'polygon_coords', None):
+                        poly = ShapelyPolygon(b.polygon_coords)
+                        if poly.distance(click_pt) <= 80.0:
+                            is_near_dorm = True
+                            break
+
+                if not is_near_dorm:
+                    return
+
                 x, y = model.snap_to_nearest_hotspot(event.xdata, event.ydata)
                 model.ignite_fire(x, y)
                 model.fire_ever_started = True

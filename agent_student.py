@@ -6,7 +6,7 @@ import random
 from faker import Faker
 from pathfinder import DStarLite
 from building import Building
-from config import NUM_DORMS, TRUCK_DELAY_MAX, TRUCK_DELAY_MIN, GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
+from config import NUM_DORMS, STUDENT_SAFETY_MARGIN_PANIC, STUDENT_SAFETY_MARGIN_CALM, ALERT_SPREAD_DELAY_MIN, ALERT_SPREAD_DELAY_MAX, TRUCK_DELAY_MAX, TRUCK_DELAY_MIN, GO_TO_DESTINATION_PROB, STUDENT_CHANCE, CALM_SPEED_MIN, CALM_SPEED_MAX, PANIC_THRESHOLD_MAX, PANIC_THRESHOLD_MIN, DEATH_THRESHOLD_MAX, DEATH_THRESHOLD_MIN
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from simulation_model import CampusModel
@@ -103,7 +103,7 @@ class Student(Agent):
         if self.dstar is None or not self.model.fire_started:
             return
 
-        safety_margin = 12.0 if self.is_panicked else 8.0
+        safety_margin = STUDENT_SAFETY_MARGIN_PANIC if self.is_panicked else STUDENT_SAFETY_MARGIN_CALM
         danger_radius = self.model.current_fire_radius + safety_margin
         if danger_radius - self.last_fire_radius_notified < 3.0:
             return
@@ -174,8 +174,16 @@ class Student(Agent):
             self.target_name = self.model.hotspot_names[choice_idx]
             self.target_node = self.model.hotspot_nodes[choice_idx]
         else:
-            self.target_name = "Evacuation Point"
-            self.target_node = self.model.hotspot_nodes[0]
+            if self.model.hotspot_nodes:
+                farthest_idx = max(
+                    range(len(self.model.hotspot_nodes)),
+                    key=lambda i: (self.model.nodes_proj.loc[self.model.hotspot_nodes[i]].geometry.x - self.model.fire_center_x) ** 2 +
+                                  (self.model.nodes_proj.loc[self.model.hotspot_nodes[i]].geometry.y - self.model.fire_center_y) ** 2)
+                self.target_name = self.model.hotspot_names[farthest_idx]
+                self.target_node = self.model.hotspot_nodes[farthest_idx]
+            self.edge_waypoints = []
+            self.recalculate_path(retries=0)
+            return
 
         self.edge_waypoints = []
         self.recalculate_path(retries=0)
@@ -532,10 +540,10 @@ class Student(Agent):
 
         if self.model.fire_started and self.alert_cooldown == 0:
             self.alert_cooldown = 999
-            all_students = [a for a in self.model.schedule.agents if type(a).__name__ == 'Student' and not a.is_aware and not a.is_dead and a is not self]
+            all_students = [a for a in self.model.active_agents_cache if type(a).__name__ == 'Student' and not a.is_aware and a is not self]
             targets = random.sample(all_students, min(random.randint(1, 3), len(all_students)))
             for t in targets:
-                delay = random.randint(80,400)
+                delay = random.randint(ALERT_SPREAD_DELAY_MIN, ALERT_SPREAD_DELAY_MAX)
                 self.model.pending_alerts.append((self.model.schedule.steps + delay, t, self.full_name))
 
 
@@ -588,19 +596,14 @@ class Student(Agent):
                     self.become_panicked()
                     return
 
-        if not self.is_panicked:
-            for smoke in self.model.smoke_blobs[::5]:
-                d_smoke = ((self.x - smoke['x'])**2 + (self.y - smoke['y'])**2)**0.5
-                if d_smoke < 8.0:
-                    self.become_panicked()
-                    return
-
     def check_surroundings(self):
         if self.is_dead or not self.model.fire_started or self.is_panicked:
             return
+        if not self.model.active_agents_cache:
+            return
         panicked_nearby = 0
         for agent in self.model.active_agents_cache:
-            if agent is not self and agent.is_panicked:
+            if agent is not self and getattr(agent, 'is_panicked', False):
                 d = ((self.x - agent.x)**2 + (self.y - agent.y)**2)**0.5
                 if d<25.0:
                     panicked_nearby += 1
@@ -716,7 +719,8 @@ class Student(Agent):
         if self.model.schedule.steps % 20 == 0:
             self.check_surroundings()
 
-        if self.is_aware and self.model.fire_started and self.model.schedule.steps % 10 == 0:
+        agent_offset = hash(str(self.unique_id)) % 10
+        if self.is_aware and self.model.fire_started and self.model.schedule.steps % 10 == agent_offset:
             self.notify_dstar_fire_zones()
 
         if self.flee_mode and not self.is_frozen:

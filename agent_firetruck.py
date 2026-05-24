@@ -5,6 +5,7 @@ import math
 import random
 from typing import TYPE_CHECKING
 from agent_firefighter import Firefighter
+from config import TRUCK_SPEED, TRUCK_FF_MIN, TRUCK_FF_MAX, TRUCK_STANDOFF
 if TYPE_CHECKING:
     from simulation_model import CampusModel
 
@@ -17,7 +18,7 @@ class Firetruck(Agent):
         self.home_x, self.home_y = self.x, self.y
         self.start_x, self.start_y = self.x, self.y
         self.end_x, self.end_y = self.x, self.y
-        self.base_speed = 4.0
+        self.base_speed = TRUCK_SPEED
         self.current_speed = self.base_speed
         self.path = []
         self.return_path = []
@@ -167,12 +168,16 @@ class Firetruck(Agent):
         self.boarded_count += 1
         if self.boarded_count >= len(self.firefighters):
             self.calculate_route_to_home()
-            self.path = self.return_path
-            self.frames_current = self.frames_total
-            self.is_returning = True
+            if self.return_path:
+                self.path = self.return_path[:]
+                self.frames_current = self.frames_total
+                self.is_returning = True
+            else:
+                self.is_returning = True
+                self.path = []
 
     def spawn_firefighters(self):
-        num_firefighters = random.randint(3,4)
+        num_firefighters = random.randint(TRUCK_FF_MIN, TRUCK_FF_MAX)
         arc_spread = 2.0
         start_angle = self.assigned_angle - (arc_spread / 2)
         step_angle = arc_spread / max(1, (num_firefighters - 1))
@@ -219,7 +224,7 @@ class Firetruck(Agent):
         return self.find_best_position(random.uniform(0, 2*math.pi))
 
     def fire_stay_position(self):
-        standoff = 20.0
+        standoff = TRUCK_STANDOFF
         sx = self.model.fire_center_x + math.cos(self.assigned_angle)*standoff
         sy = self.model.fire_center_y + math.sin(self.assigned_angle)*standoff
         return sx, sy
@@ -248,6 +253,18 @@ class Firetruck(Agent):
             if dist_home < 5.0 or not self.return_path:
                 self.model.schedule.remove(self)
                 return
+
+        if not self.has_arrived and not self.is_returning:
+            if not self.model.fire_started and not getattr(self.model, 'interior_fire_only', False):
+                if not self.troops_deployed:
+                    self.calculate_route_to_home()
+                    if self.return_path:
+                        self.path = self.return_path[:]
+                        self.frames_current = self.frames_total
+                    else:
+                        self.path = []
+                    self.is_returning = True
+                    return
 
         if self.has_arrived and not self.is_returning:
             return

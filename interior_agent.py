@@ -2,7 +2,7 @@ import math
 import random
 import networkx as nx
 from shapely import Point
-from config import STAIR_CAPACITY, INTERIOR_CALM_SPEED, INTERIOR_EVAC_SPEED, INTERIOR_SLOW_EVAC_SPEED, INTERIOR_QUEUE_MOVE
+from config import STUDENT_STAIR_TICKS, INTERIOR_FIRE_DEATH_TICKS, STAIR_CAPACITY, INTERIOR_CALM_SPEED, INTERIOR_EVAC_SPEED, INTERIOR_SLOW_EVAC_SPEED, INTERIOR_QUEUE_MOVE
 
 class InteriorAgent:
     def __init__(self, agent_id, x, y, floor, map_student=None):
@@ -95,8 +95,11 @@ class InteriorAgent:
             self.queue_idx_timer = 0
 
         if self.queue_idx_timer <= 0:
-            self.cached_queue_idx = queue.index(self)
-            self.queue_idx_timer = 5
+            try:
+                self.cached_queue_idx = queue.index(self)
+            except ValueError:
+                self.cached_queue_idx = 0
+            self.queue_idx_timer = 10
         else:
             self.queue_idx_timer -= 1
         idx = self.cached_queue_idx
@@ -144,7 +147,8 @@ class InteriorAgent:
             self.panic_wander_timer = 0
 
             if not polygon.contains(Point(self.x, self.y)):
-                nearest_node = min(self.building_nodes, key=lambda n: (self.x - n[0]) ** 2 + (self.y - n[1]) ** 2) if hasattr(self, 'building_nodes') else None
+                bn = getattr(self, 'building_nodes', None)
+                nearest_node = min(bn, key=lambda n: (self.x - n[0]) ** 2 + (self.y - n[1]) ** 2) if bn else None
                 if nearest_node:
                     self.x, self.y = nearest_node
 
@@ -184,9 +188,12 @@ class InteriorAgent:
             dist = math.sqrt((self.x - fc['x'])**2 + (self.y - fc['y'])**2)
             if dist < fc['radius'] * 0.6:
                 self.fire_death_timer += 1
-                if self.fire_death_timer > 60:
+                if self.fire_death_timer > INTERIOR_FIRE_DEATH_TICKS:
                     if self.map_student:
                         self.map_student.die()
+                    for q in building_grid.stair_queues.values():
+                        if self in q:
+                            q.remove(self)
                     return
             else:
                 self.fire_death_timer = max(0, self.fire_death_timer - 1)
@@ -254,7 +261,7 @@ class InteriorAgent:
                     queue.remove(self)
                     self._waiting_at_stair = False
                     self.in_transit = True
-                    self.stair_timer = 35
+                    self.stair_timer = STUDENT_STAIR_TICKS
 
                     self.x, self.y = best_stair
                     building_grid.stair_occupancy[best_stair] += 1

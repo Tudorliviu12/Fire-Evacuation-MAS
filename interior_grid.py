@@ -5,6 +5,7 @@ import numpy as np
 from scipy.spatial import KDTree
 from shapely import Polygon, Point, LineString
 from interior_agent import InteriorAgent
+from config import  ALARM_RESPONSE_FAST_MAX, ALARM_RESPONSE_MED_MIN, ALARM_RESPONSE_MED_MAX, ALARM_RESPONSE_SLOW_MIN, ALARM_RESPONSE_SLOW_MAX, INTERIOR_FIRE_GROWTH_BASE, INTERIOR_FIRE_GROWTH_SCALE, INTERIOR_FIRE_MAX_RADIUS
 
 class InteriorGrid:
 
@@ -255,8 +256,8 @@ class InteriorGrid:
                 p['life'] -= 1
 
         for floor, fc in self.fire_centers.items():
-            growth_speed = 0.01 + (fc['radius'] / 60.0) * 0.08
-            fc['radius'] = min(fc['radius'] + growth_speed, 60.0)
+            growth_speed = INTERIOR_FIRE_GROWTH_BASE + (fc['radius'] / INTERIOR_FIRE_MAX_RADIUS) * INTERIOR_FIRE_GROWTH_SCALE
+            fc['radius'] = min(fc['radius'] + growth_speed, INTERIOR_FIRE_MAX_RADIUS)
 
             campus_model = getattr(self.building, 'model', None)
             if campus_model and getattr(campus_model, 'interior_fire_only', False):
@@ -272,14 +273,14 @@ class InteriorGrid:
 
                 for floor_agents in self.floors.values():
                     for agent in floor_agents:
-                        if not agent.is_aware_of_fire:
+                        if not agent.is_aware_of_fire and not agent.is_exiting:
                             r = random.random()
                             if r < 0.3:
-                                agent.alarm_response_timer = random.randint(0, 20)
+                                agent.alarm_response_timer = random.randint(0, ALARM_RESPONSE_FAST_MAX)
                             elif r < 0.7:
-                                agent.alarm_response_timer = random.randint(40, 100)
+                                agent.alarm_response_timer = random.randint(ALARM_RESPONSE_MED_MIN, ALARM_RESPONSE_MED_MAX)
                             else:
-                                agent.alarm_response_timer = random.randint(120, 250)
+                                agent.alarm_response_timer = random.randint(ALARM_RESPONSE_SLOW_MIN, ALARM_RESPONSE_SLOW_MAX)
 
             if hasattr(self, 'graph'):
                 cx, cy, rad = fc['x'], fc['y'], fc['radius'] * 0.8

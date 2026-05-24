@@ -41,10 +41,10 @@ class Building:
     def evacuate_step(self):
         if self.is_on_fire and len(self.inventory) > 0:
             if not self.interior_grid:
-                num_to_evacuate = min(len(self.inventory), random.randint(1,3))
-                for _ in range(num_to_evacuate):
-                    idx = random.randint(0,len(self.inventory)-1)
-                    blob = self.inventory.pop(idx)
+                num_to_evacuate = min(len(self.inventory), random.randint(1, 3))
+                to_evacuate = random.sample(self.inventory, num_to_evacuate)
+                for blob in to_evacuate:
+                    self.inventory.remove(blob)
                     blob.is_hidden = False
                     offset_x = random.uniform(-0.5, 0.5)
                     offset_y = random.uniform(-0.5, 0.5)

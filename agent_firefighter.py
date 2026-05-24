@@ -6,7 +6,7 @@ import random
 from faker import Faker
 from shapely.geometry import Point
 from typing import TYPE_CHECKING
-from config import FIREFIGHTER_STANDOFF, MIN_FIREFIGHTER_DIST, WATER_SPREAD_ANGLE, WATER_PARTICLES_PER_FRAME, WATER_PARTICLE_SPEED, WATER_EXTINGUISH_POWER, FIREFIGHTER_RETREAT_DIST, FIREFIGHTER_ADVANCE_DIST
+from config import FF_SHOOT_INTERVAL_MIN, FF_SHOOT_INTERVAL_MAX, FF_BURST_MAX_MIN, FF_BURST_MAX_MAX, FF_BURST_PAUSE_MIN, FF_BURST_PAUSE_MAX, FF_STAIR_TICKS_PER_FLOOR, FIREFIGHTER_STANDOFF, MIN_FIREFIGHTER_DIST, WATER_SPREAD_ANGLE, WATER_PARTICLES_PER_FRAME, WATER_PARTICLE_SPEED, WATER_EXTINGUISH_POWER, FIREFIGHTER_RETREAT_DIST, FIREFIGHTER_ADVANCE_DIST
 from pathfinder import DStarLite
 from interior_agent import InteriorAgent
 if TYPE_CHECKING:
@@ -24,9 +24,9 @@ class Firefighter(Agent):
         self.angle_offset = angle_offset
         self.truck = truck
         self.shoot_cooldown = 0
-        self.shoot_interval = random.randint(4, 8)
+        self.shoot_interval = random.randint(FF_SHOOT_INTERVAL_MIN, FF_SHOOT_INTERVAL_MAX)
         self.burst_count = 0
-        self.burst_max = random.randint(8,14)
+        self.burst_max = random.randint(FF_BURST_MAX_MIN, FF_BURST_MAX_MAX)
         self.burst_paused = 0
         self.base_speed = 1.0
         self.current_speed = self.base_speed
@@ -155,8 +155,6 @@ class Firefighter(Agent):
                 self.is_returning = True
             self.return_to_truck()
             return
-
-        dist_to_fire = math.sqrt((self.x - self.model.fire_center_x) ** 2 + (self.y - self.model.fire_center_y) ** 2)
 
         if not getattr(self.model, 'interior_fire_only', False):
             dist_to_fire = math.sqrt(
@@ -300,7 +298,7 @@ class Firefighter(Agent):
         self.burst_count += 1
         if self.burst_count >= self.burst_max:
             self.burst_count = 0
-            self.burst_paused = random.randint(10,20)
+            self.burst_paused = random.randint(FF_BURST_PAUSE_MIN, FF_BURST_PAUSE_MAX)
         else:
             self.shoot_cooldown = self.shoot_interval
 
@@ -334,9 +332,12 @@ class Firefighter(Agent):
         self.is_hidden = True
 
         stair = random.choice(ig.stair_nodes) if ig.stair_nodes else (ig.grid_nodes[0] if ig.grid_nodes else (50.0, 50.0))
+        offset_x = random.uniform(-0.5, 0.5)
+        offset_y = random.uniform(-0.5, 0.5)
+
         ia = InteriorAgent(
             agent_id = f"FF_{self.unique_id}",
-            x=stair[0], y=stair[1],
+            x=stair[0] + offset_x, y=stair[1] + offset_y,
             floor=0,
             map_student=None
         )
@@ -374,7 +375,7 @@ class Firefighter(Agent):
                 ia.x, ia.y = best_stair
                 ia.in_transit = True
                 floors_diff = abs(self.indoor_target_floor - ia.floor)
-                ia.stair_timer = 20 * max(1, floors_diff)
+                ia.stair_timer = FF_STAIR_TICKS_PER_FLOOR * max(1, floors_diff)
                 ia.stair_timer_total = ia.stair_timer
                 ia.firefighter_climb_start_floor = ia.floor
                 ia.firefighter_climb_target_floor = self.indoor_target_floor
@@ -405,9 +406,19 @@ class Firefighter(Agent):
             dist_to_fire = max(0.1, math.sqrt(dx_fire ** 2 + dy_fire ** 2))
             if not hasattr(ia, 'fight_post') or ia.fight_post is None:
                 angle_personal = (hash(str(self.unique_id)) % 360) * (math.pi / 180.0)
-                safe_nodes = [n for n in ig.grid_nodes if n not in ig.burned_nodes]
+                safe_nodes = [n for n in ig.grid_nodes if n not in ig.burned_nodes and ig.graph.degree(n) > 0]
                 if safe_nodes:
-                    dest = min(safe_nodes, key=lambda n: (abs(math.sqrt((n[0] - fx) ** 2 + (n[1] - fy) ** 2) - 7.0) * 0.5 + abs(math.atan2(n[1] - fy, n[0] - fx) - angle_personal) * 8.0))
+                    closest_cur = min(safe_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
+                    try:
+                        reachable_set = nx.node_connected_component(ig.graph, closest_cur)
+                        reachable = [n for n in safe_nodes if n in reachable_set]
+                    except Exception:
+                        reachable = safe_nodes
+                    if not reachable:
+                        reachable = safe_nodes
+                    tx = fx + math.cos(angle_personal) * 7.0
+                    ty = fy + math.sin(angle_personal) * 7.0
+                    dest = min(reachable, key=lambda n: (n[0] - tx) ** 2 + (n[1] - ty) ** 2)
                     ia.fight_post = dest
                 else:
                     ia.fight_post = None
@@ -431,14 +442,16 @@ class Firefighter(Agent):
                     dy = next_pt[1] - ia.y
                     d = max(0.1, math.sqrt(dx ** 2 + dy ** 2))
                     if d < 1.2:
+                        ia.x, ia.y = next_pt
                         ia.path.pop(0)
                     else:
                         nx_ = ia.x + (dx / d) * 1.5
                         ny_ = ia.y + (dy / d) * 1.5
-                        if ig.safe_polygon.contains(Point(nx_, ny_)):
+                        if ig.polygon.contains(Point(nx_, ny_)):
                             ia.x, ia.y = nx_, ny_
                         else:
-                            ia.path = []
+                            ia.x, ia.y = next_pt
+                            ia.path.pop(0)
                 return
 
             if ia.fight_post is not None:
@@ -451,21 +464,37 @@ class Firefighter(Agent):
                             full = nx.shortest_path(ig.graph, closest, ia.fight_post)
                             ia.path = full[1:] if len(full) > 1 else [ia.fight_post]
                         except Exception:
-                            ia.path = [ia.fight_post]
+                            try:
+                                reachable_set = nx.node_connected_component(ig.graph, closest)
+                                reachable = [n for n in safe_nodes if n in reachable_set]
+                            except Exception:
+                                reachable = []
+                            if reachable:
+                                fallback = min(reachable, key=lambda n: (n[0] - ia.fight_post[0]) ** 2 + (
+                                            n[1] - ia.fight_post[1]) ** 2)
+                                ia.path = [fallback]
+                                ia.fight_post = fallback
+                            else:
+                                ia.fight_post = None
+                                ia.path = []
                     if ia.path:
                         next_pt = ia.path[0]
                         dx = next_pt[0] - ia.x
                         dy = next_pt[1] - ia.y
                         d = max(0.1, math.sqrt(dx ** 2 + dy ** 2))
                         if d < 1.2:
+                            ia.x, ia.y = next_pt
                             ia.path.pop(0)
                         else:
                             nx_ = ia.x + (dx / d) * 1.5
                             ny_ = ia.y + (dy / d) * 1.5
-                            if ig.safe_polygon.contains(Point(nx_, ny_)):
+                            if ig.polygon.contains(Point(nx_, ny_)):
                                 ia.x, ia.y = nx_, ny_
                             else:
-                                ia.path = []
+                                ia.x, ia.y = next_pt
+                                ia.path.pop(0)
+                                if not ia.path:
+                                    ia.fight_post = None
                     return
 
             ia.path = []
@@ -500,13 +529,18 @@ class Firefighter(Agent):
                 ia.stuck_hist = []
             ia.stuck_hist.append((ia.x, ia.y))
 
-            if len(ia.stuck_hist) > 40:
+            if len(ia.stuck_hist) > 20:
                 ia.stuck_hist.pop(0)
                 old_x, old_y = ia.stuck_hist[0]
                 if math.sqrt((ia.x - old_x) ** 2 + (ia.y - old_y) ** 2) < 1.5:
                     ia.fight_post = None
                     ia.path = []
                     ia.stuck_hist = []
+                    snap_nodes = [n for n in ig.grid_nodes if n not in ig.burned_nodes and ig.graph.degree(n) > 0]
+                    if snap_nodes:
+                        snap = min(snap_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
+                        ia.x, ia.y = snap
+
 
             if fc['radius'] <= 0:
                 ig.fire_floors.discard(self.indoor_target_floor)
@@ -543,12 +577,11 @@ class Firefighter(Agent):
                     else:
                         nx_ = ia.x + (dx / d) * 2.0
                         ny_ = ia.y + (dy / d) * 2.0
-                        if ig.safe_polygon.contains(Point(nx_, ny_)):
+                        if ig.polygon.contains(Point(nx_, ny_)):
                             ia.x, ia.y = nx_, ny_
                         else:
-                            nearest = min(ig.grid_nodes, key=lambda n: (ia.x - n[0]) ** 2 + (ia.y - n[1]) ** 2)
-                            ia.x, ia.y = nearest[0], nearest[1]
-                            ia.path = []
+                            ia.x, ia.y = next_pt[0], next_pt[1]
+                            ia.path.pop(0)
 
             else:
                 ia.x, ia.y = best_stair
@@ -571,11 +604,21 @@ class Firefighter(Agent):
             self.exit_indoor()
 
         if self.indoor_state in ['entering', 'fighting', 'descending'] and ia and ig:
-            if not ig.polygon.contains(Point(ia.x, ia.y)):
-                nearest = min(ig.grid_nodes, key = lambda n: (ia.x - n[0]) ** 2 + (ia.y - n[1]) ** 2)
-                ia.x, ia.y = nearest[0], nearest[1]
-                ia.path = []
-
+            if not hasattr(ia, 'global_stuck_hist'):
+                ia.global_stuck_hist = []
+            ia.global_stuck_hist.append((ia.x, ia.y))
+            if len(ia.global_stuck_hist) > 40:
+                old_x, old_y = ia.global_stuck_hist.pop(0)
+                if math.sqrt((ia.x - old_x) ** 2 + (ia.y - old_y) ** 2) < 1.0:
+                    ia.fight_post = None
+                    ia.path = []
+                    ia.global_stuck_hist = []
+                    snap_nodes = [n for n in ig.grid_nodes if n not in ig.burned_nodes and ig.graph.degree(n) > 0]
+                    if snap_nodes:
+                        snap = min(snap_nodes, key=lambda n: (n[0] - ia.x) ** 2 + (n[1] - ia.y) ** 2)
+                        ia.x, ia.y = snap
+                    else:
+                        ia.x, ia.y = ig.grid_center
 
     def is_too_close_indoor(self, ia, x, y, min_dist=2.0):
         ig = self.indoor_building.interior_grid if self.indoor_building else None
@@ -599,8 +642,8 @@ class Firefighter(Agent):
         best_stair = min(ig.stair_nodes, key=lambda s: (ia.x-s[0])**2 + (ia.y-s[1])**2)
         ia.x, ia.y = best_stair
         ia.in_transit = True
-        floors_dif = abs(new_floor - current)
-        ia.stair_timer = 20*max(1, floors_dif)
+        floors_diff = abs(new_floor - current)
+        ia.stair_timer = FF_STAIR_TICKS_PER_FLOOR * max(1, floors_diff)
         ia.stair_timer_total = ia.stair_timer
         ia.firefighter_climb_start_floor = current
         ia.firefighter_climb_target_floor = new_floor

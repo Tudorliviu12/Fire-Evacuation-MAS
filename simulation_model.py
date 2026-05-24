@@ -12,7 +12,7 @@ from shapely.ops import unary_union
 import random
 import math
 from building import Building
-from config import RAW_LOCATIONS, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, SMOKE_GROWTH, SMOKE_LIFESPAN, WATER_EXTINGUISH_POWER
+from config import RAW_LOCATIONS, FIRE_STRENGTH_MIN, FIRE_STRENGTH_MAX, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, SMOKE_GROWTH, SMOKE_LIFESPAN, WATER_EXTINGUISH_POWER
 
 
 class CampusModel(Model):
@@ -139,7 +139,7 @@ class CampusModel(Model):
 
         if best_building is not None:
             best_building.is_on_fire = True
-            return (x,y)
+            return best_building.door_coords
         return (x,y)
 
     def ignite_fire(self, x, y):
@@ -148,7 +148,7 @@ class CampusModel(Model):
         print(f"Fire started at {x}, {y}")
         self.interior_fire_only = False
         self.fire_ever_started = True
-        self.fire_strength = random.randint(1,4)
+        self.fire_strength = random.randint(FIRE_STRENGTH_MIN, FIRE_STRENGTH_MAX)
         self.trucks_max_needed = min(3, self.fire_strength + 1)
         self.truck_count = 0
         self.next_truck_timer = 0
@@ -166,37 +166,33 @@ class CampusModel(Model):
 
         fire_pt = Point(self.fire_center_x, self.fire_center_y)
         check_radius = self.current_fire_radius + 10.0
+        burn_radius = self.current_fire_radius + 5.0
+        r_sq = check_radius * check_radius
 
-        for u,v,k,data in self.G_all.edges(keys=True, data=True):
-            if(u,v,k) in self.burned_edges:
+        for u, v, k, data in self.G_all.edges(keys=True, data=True):
+            if (u, v, k) in self.burned_edges:
                 continue
-
-            nx_u = self.G_all.nodes[u]['x']
-            ny_u = self.G_all.nodes[u]['y']
-            nx_v = self.G_all.nodes[v]['x']
-            ny_v = self.G_all.nodes[v]['y']
+            nx_u = self.G_all.nodes[u].get('x', 0)
+            ny_u = self.G_all.nodes[u].get('y', 0)
+            nx_v = self.G_all.nodes[v].get('x', 0)
+            ny_v = self.G_all.nodes[v].get('y', 0)
             mid_x = (nx_u + nx_v) / 2
             mid_y = (ny_u + ny_v) / 2
             dx = mid_x - self.fire_center_x
             dy = mid_y - self.fire_center_y
-
-            if dx*dx + dy*dy > (check_radius*check_radius):
+            if dx * dx + dy * dy > r_sq:
                 continue
-
             if 'geometry' in data:
                 edge_geom = data['geometry']
             else:
-                nx_u, ny_u = self.G_all.nodes[u]['x'], self.G_all.nodes[u]['y']
-                nx_v, ny_v = self.G_all.nodes[v]['x'], self.G_all.nodes[v]['y']
                 edge_geom = LineString([(nx_u, ny_u), (nx_v, ny_v)])
 
             dist = fire_pt.distance(edge_geom)
-            if dist < self.current_fire_radius + 5.0:
-                if (u,v,k) not in self.burned_edges:
-                    self.burned_edges.add((u,v,k))
-                    if self.G_working.has_edge(u,v,key=k):
-                        self.G_working.remove_edge(u,v,key=k)
-                        self.notify_agents_edge_burned(u,v)
+            if dist < burn_radius:
+                self.burned_edges.add((u, v, k))
+                if self.G_working.has_edge(u, v, key=k):
+                    self.G_working.remove_edge(u, v, key=k)
+                    self.notify_agents_edge_burned(u, v)
 
     def check_buildings_fire(self):
         if not self.fire_started:
@@ -218,7 +214,6 @@ class CampusModel(Model):
                     dist = math.sqrt((building.door_coords[0] - self.fire_center_x)**2 + (building.door_coords[1] - self.fire_center_y)**2)
                     if dist < self.current_fire_radius + 30.0:
                         building.is_on_fire = True
-            building.evacuate_step()
 
     def notify_agents_edge_burned(self, u, v):
         for agent in self.active_agents_cache:
@@ -230,7 +225,8 @@ class CampusModel(Model):
         to_remove = [a for a in self.schedule.agents if getattr(a, 'should_remove', False)]
         self.active_agents_cache = [
             a for a in self.schedule.agents
-            if getattr(a, 'is_active', False) and not getattr(a, 'is_dead', False)
+            if (getattr(a, 'is_active', True) and not getattr(a, 'is_dead', False)
+                and not getattr(a, 'should_remove', False))
         ]
         for agent in to_remove:
             self.schedule.remove(agent)
@@ -254,7 +250,15 @@ class CampusModel(Model):
                     self.fire_center_y = b.door_coords[1]
                     self.current_fire_radius = max(self.current_fire_radius, fc_interior['radius'] * 0.3)
                     self.interior_fire_only = True
-                    break
+            if getattr(self, 'interior_fire_only', False):
+                all_interior_fires_out = all(
+                    not getattr(b, 'interior_grid', None) or not b.interior_grid.fire_centers
+                    for b in self.buildings
+                )
+                if all_interior_fires_out:
+                    self.interior_fire_only = False
+                    self.current_fire_radius = 0.0
+                    self.fire_started = False
 
         if self.alarm_triggered:
             if not self.truck_dispatched:
@@ -271,15 +275,15 @@ class CampusModel(Model):
                     self.schedule.add(truck)
 
             if self.truck_dispatched and self.truck_count < self.trucks_max_needed:
-                trucks_arrived = [
-                    a for a in self.schedule.agents
-                    if type(a).__name__ == 'Firetruck' and getattr(a, 'has_arrived', False)
-                ]
-                if not trucks_arrived:
-                    self.ticks_since_last_truck = 0
+                if not self.fire_started and not getattr(self, 'interior_fire_only', False):
+                    self.trucks_max_needed = self.truck_count
                 else:
+                    trucks_arrived = [
+                        a for a in self.schedule.agents
+                        if type(a).__name__ == 'Firetruck' and getattr(a, 'has_arrived', False)
+                    ]
                     self.ticks_since_last_truck += 1
-                    if self.ticks_since_last_truck > 100:
+                    if trucks_arrived and self.ticks_since_last_truck > 100:
                         self.truck_count += 1
                         self.ticks_since_last_truck = 0
                         entry_node = self.safe_nodes[self.truck_count % len(self.safe_nodes)]
@@ -288,6 +292,7 @@ class CampusModel(Model):
                         auto_entry = ox.distance.nearest_nodes(self.G_drive, entry_x, entry_y)
                         truck = Firetruck(f"TRUCK_{self.truck_count}", self, auto_entry)
                         self.schedule.add(truck)
+
 
         if self.fire_started and not getattr(self, 'interior_fire_only', False):
             if self.alarm_triggered:

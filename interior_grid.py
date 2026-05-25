@@ -100,6 +100,10 @@ class InteriorGrid:
             return None
 
     def set_fire_on_floor(self, floor, x=None, y=None):
+        if x is not None and y is not None:
+            if not self.polygon.contains(Point(x,y)):
+                return False
+
         self.fire_floors.add(floor)
         if floor not in self.fire_centers:
             if x is not None and y is not None:
@@ -113,6 +117,7 @@ class InteriorGrid:
             else:
                 cx, cy = 50.0, 50.0
             self.fire_centers[floor] = {'x': cx, 'y': cy, 'radius': 1.5}
+        return True
 
     def generate_grid(self):
         minx, miny, maxx, maxy = self.polygon.bounds
@@ -256,7 +261,17 @@ class InteriorGrid:
                 p['life'] -= 1
 
         for floor, fc in self.fire_centers.items():
-            growth_speed = INTERIOR_FIRE_GROWTH_BASE + (fc['radius'] / INTERIOR_FIRE_MAX_RADIUS) * INTERIOR_FIRE_GROWTH_SCALE
+            campus_model = getattr(self.building, 'model', None)
+            base_growth = INTERIOR_FIRE_GROWTH_BASE
+            scale_growth = INTERIOR_FIRE_GROWTH_SCALE
+
+            if campus_model:
+                if getattr(campus_model, 'fire_growth_base_override', None) is not None:
+                    base_growth = campus_model.fire_growth_base_override
+                if getattr(campus_model, 'fire_growth_scale_override', None) is not None:
+                    scale_growth = campus_model.fire_growth_scale_override
+
+            growth_speed = base_growth + (fc['radius'] / INTERIOR_FIRE_MAX_RADIUS) * scale_growth
             fc['radius'] = min(fc['radius'] + growth_speed, INTERIOR_FIRE_MAX_RADIUS)
 
             campus_model = getattr(self.building, 'model', None)

@@ -402,7 +402,10 @@ if __name__ == '__main__':
 
             if is_fire_mode:
                 if not getattr(model, 'fire_ever_started', False):
-                    ig.set_fire_on_floor(current_floor, cx, cy)
+                    fire_start = ig.set_fire_on_floor(current_floor, cx, cy)
+                    if fire_start is False:
+                        return
+
                     model.interior_fire_only = True
                     model.fire_started = True
                     model.fire_ever_started = True
@@ -715,6 +718,5 @@ if __name__ == '__main__':
         manager.window.wm_geometry("+160+20")
     except Exception as e:
         pass
-
 
     plt.show()

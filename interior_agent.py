@@ -188,9 +188,27 @@ class InteriorAgent:
             dist = math.sqrt((self.x - fc['x'])**2 + (self.y - fc['y'])**2)
             if dist < fc['radius'] * 0.6:
                 self.fire_death_timer += 1
-                if self.fire_death_timer > INTERIOR_FIRE_DEATH_TICKS:
+
+                campus_model = getattr(self.map_student, 'model', None)
+                death_threshold = INTERIOR_FIRE_DEATH_TICKS
+                if campus_model and getattr(campus_model, 'interior_fire_death_ticks_override', None) is not None:
+                    death_threshold = campus_model.interior_fire_death_ticks_override
+
+                if self.fire_death_timer > death_threshold:
                     if self.map_student:
                         self.map_student.die()
+
+                        if campus_model and hasattr(campus_model, 'death_log'):
+                            b_name = "Unknown"
+                            if getattr(self.map_student, 'current_building', None):
+                                b_name = self.map_student.current_building.name
+                            campus_model.death_log.append({
+                                'x': self.x,
+                                'y': self.y,
+                                'floor': self.floor,
+                                'building': b_name
+                            })
+
                     for q in building_grid.stair_queues.values():
                         if self in q:
                             q.remove(self)
@@ -209,6 +227,19 @@ class InteriorAgent:
                     self.map_student.is_panicked = True
 
             if not self.is_exiting:
+                if self.alarm_response_timer == -1:
+                    campus_model = getattr(self.map_student, 'model', None)
+                    if campus_model and getattr(campus_model, 'alarm_response_mode', 'realistic') == 'ideal':
+                        self.alarm_response_timer = 0
+                    else:
+                        val = random.random()
+                        if val < 0.3:
+                            self.alarm_response_timer = random.randint(0, 20)
+                        elif val < 0.7:
+                            self.alarm_response_timer = random.randint(40, 100)
+                        else:
+                            self.alarm_response_timer = random.randint(120, 250)
+
                 if self.alarm_response_timer > 0:
                     self.alarm_response_timer -= 1
                 elif self.alarm_response_timer == 0:

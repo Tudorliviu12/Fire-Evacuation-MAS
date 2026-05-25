@@ -12,12 +12,37 @@ from shapely.ops import unary_union
 import random
 import math
 from building import Building
-from config import RAW_LOCATIONS, FIRE_STRENGTH_MIN, FIRE_STRENGTH_MAX, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, SMOKE_GROWTH, SMOKE_LIFESPAN, WATER_EXTINGUISH_POWER
-
+from config import RAW_LOCATIONS, FIRE_STRENGTH_MIN, FIRE_STRENGTH_MAX, MAX_SMOKE, WIND_ANGLE, FIRE_GROWTH_MIN, FIRE_GROWTH_MAX, MAX_FIRE_RADIUS_SOFT_CAP, SMOKE_SPEED, SMOKE_GROWTH, SMOKE_LIFESPAN, WATER_EXTINGUISH_POWER, TRUCK_DELAY_MIN, TRUCK_DELAY_MAX
 
 class CampusModel(Model):
-    def __init__(self, G_all, G_drive, nodes_proj, buildings_gdf, doors, n_students):
+    def __init__(self, G_all, G_drive, nodes_proj, buildings_gdf, doors, n_students,
+        fire_growth_base_override = None,
+        fire_growth_scale_override = None,
+        interior_fire_death_ticks_override = None,
+        alarm_response_mode = 'realistic',
+        digital_alerts_enabled = True,
+        truck_delay_min_override = None,
+        truck_delay_max_override = None,
+        data_collection_mode = 'none'):
+
         super().__init__()
+
+        self.alarm_response_mode = alarm_response_mode
+        self.digital_alerts_enabled = digital_alerts_enabled
+        self.fire_growth_base_override = fire_growth_base_override
+        self.fire_growth_scale_override = fire_growth_scale_override
+        self.interior_fire_death_ticks_override = interior_fire_death_ticks_override
+        self.truck_delay_min = truck_delay_min_override if truck_delay_min_override is not None else TRUCK_DELAY_MIN
+        self.truck_delay_max = truck_delay_max_override if truck_delay_max_override is not None else TRUCK_DELAY_MAX
+        self.data_collection_mode = data_collection_mode
+
+        self.death_log = []
+        self.evacuation_log = []
+        self.awareness_log = []
+        self.stair_queue_log = []
+        self.fire_radius_log = []
+        self.exterior_positions_log = []
+
         self.G_all = G_all
         self.G_drive = G_drive
         self.nodes_proj = nodes_proj
@@ -399,7 +424,7 @@ class CampusModel(Model):
         self.block_fire_edges()
         if self.fire_started and self.schedule.steps % 10 == 0:
             self.check_buildings_fire()
-        if self.pending_alerts:
+        if self.digital_alerts_enabled and self.pending_alerts:
             still_pending = []
             for (tick, student, sender_name) in self.pending_alerts:
                 if self.schedule.steps >= tick:
@@ -416,6 +441,31 @@ class CampusModel(Model):
                 b.interior_grid.step()
 
         self.schedule.step()
+
+        if self.data_collection_mode != 'none':
+            current_tick = self.schedule.steps
+            if self.data_collection_mode in ['evacuation_and_awareness', 'all']:
+                aware_count = sum(1 for a in self.active_agents_cache if getattr(a, 'is_aware', False))
+                evacuated_count = sum(1 for a in self.active_agents_cache if not getattr(a, 'indoors', True))
+                self.awareness_log.append(aware_count)
+                self.evacuation_log.append(evacuated_count)
+
+            if self.data_collection_mode in ['fire_radius', 'all']:
+                self.fire_radius_log.append(self.current_fire_radius)
+
+            if self.data_collection_mode in ['stair_bottleneck', 'all']:
+                total_in_queues = 0
+                for b in self.buildings:
+                    if getattr(b, 'interior_grid', None) and b.is_on_fire:
+                        for queue in b.interior_grid.stair_queues.values():
+                            total_in_queues += len(queue)
+                self.stair_queue_log.append(total_in_queues)
+
+            if self.data_collection_mode in ['campus_heatmap', 'all'] and current_tick % 10 == 0:
+                for a in self.active_agents_cache:
+                    if not getattr(a, 'indoors', True) and getattr(a, 'is_aware', False):
+                        self.exterior_positions_log.append({'tick': current_tick, 'x': a.x, 'y': a.y})
+
 
     def is_near_any_smoke(self, x, y):
         if not self.fire_started:

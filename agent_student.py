@@ -522,7 +522,7 @@ class Student(Agent):
             if random.random() < 0.4:
                 self.model.alarm_triggered = True
                 self.model.hero_name = self.full_name
-                self.model.truck_timer = random.randint(TRUCK_DELAY_MIN,TRUCK_DELAY_MAX)
+                self.model.truck_timer = random.randint(self.model.truck_delay_min, self.model.truck_delay_max)
                 self.reaction_time_ticks = 10
                 self.is_calling_112 = True
                 self.call_timer = 70
@@ -703,6 +703,17 @@ class Student(Agent):
         self.color = 'black'
         self.current_speed = 0
         self.path = []
+        if self.current_building and self in self.current_building.inventory:
+            self.current_building.inventory.remove(self)
+
+        building_name = self.current_building.name if self.current_building else "Unknown"
+        floor = getattr(self, 'target_floor', 0)
+        self.model.death_log.append({
+            'x': self.x,
+            'y': self.y,
+            'floor': floor,
+            'building': building_name
+        })
 
 
     def step(self):

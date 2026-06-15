@@ -196,7 +196,34 @@ class InteriorAgent:
 
                 if self.fire_death_timer > death_threshold:
                     if self.map_student:
-                        self.map_student.die()
+                        self.map_student.is_dead = True
+                        if self.map_student.current_building:
+                            if self.map_student in self.map_student.current_building.inventory:
+                                self.map_student.current_building.inventory.remove(self.map_student)
+
+                        building = self.map_student.current_building
+                        if building and hasattr(building, 'polygon_coords') and building.polygon_coords:
+                            xs = [p[0] for p in building.polygon_coords]
+                            ys = [p[1] for p in building.polygon_coords]
+                            min_x, max_x = min(xs), max(xs)
+                            min_y, max_y = min(ys), max(ys)
+
+                            global_x = min_x + (self.x / 100.0) * (max_x - min_x)
+                            global_y = min_y + (self.y / 100.0) * (max_y - min_y)
+                        else:
+                            if building:
+                                global_x, global_y = building.door_coords
+                            else:
+                                global_x, global_y = self.x, self.y
+
+                        if self.map_student.model:
+                            b_name = building.name if building else "Unknown"
+                            self.map_student.model.death_log.append({
+                                'x': global_x,
+                                'y': global_y,
+                                'floor': self.floor,
+                                'building': b_name
+                            })
 
                         if campus_model and hasattr(campus_model, 'death_log'):
                             b_name = "Unknown"
@@ -208,6 +235,12 @@ class InteriorAgent:
                                 'floor': self.floor,
                                 'building': b_name
                             })
+                    if self.in_transit and stair_nodes:
+                        self.in_transit = False
+                        best_stair = min(stair_nodes, key=lambda s: (self.x - s[0]) ** 2 + (self.y - s[1]) ** 2)
+                        if best_stair in building_grid.stair_occupancy:
+                            building_grid.stair_occupancy[best_stair] = max(0, building_grid.stair_occupancy[
+                                best_stair] - 1)
 
                     for q in building_grid.stair_queues.values():
                         if self in q:

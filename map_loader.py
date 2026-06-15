@@ -1,7 +1,6 @@
 import osmnx as ox
 import networkx as nx
 import geopandas as gpd
-import pandas as pd
 from shapely.geometry import Point, MultiPoint, LineString
 from shapely.ops import nearest_points, unary_union
 from config import MAP_CENTER, MAP_DIST, GEOJSON_FILE
